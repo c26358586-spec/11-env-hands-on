@@ -18,8 +18,8 @@ func TestHealthPayload(t *testing.T) {
 	if payload.Status != "ok" {
 		t.Fatalf("Status = %q, want ok", payload.Status)
 	}
-	if payload.Service != "ms1-go-api" {
-		t.Fatalf("Service = %q, want ms1-go-api", payload.Service)
+	if payload.Service != "ms1-broken-api" {
+		t.Fatalf("Service = %q, want ms1-broken-api", payload.Service)
 	}
 	if payload.Version != "test-version" {
 		t.Fatalf("Version = %q, want test-version", payload.Version)
