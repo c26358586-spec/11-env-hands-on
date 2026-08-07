@@ -18,6 +18,7 @@ type healthResponse struct {
 func routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/not-found", healthHandler)
 	return mux
 }
 
