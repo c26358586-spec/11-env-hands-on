@@ -326,10 +326,16 @@ jobs:
       overall_test_result: ${{ steps.environment-lifecycle.outputs.overall_test_result }}
       test_result: ${{ steps.environment-lifecycle.outputs.test_result }}
       test_result_alias_of: ${{ steps.environment-lifecycle.outputs.test_result_alias_of }}
+      infrastructure_test_execution_state: ${{ steps.environment-lifecycle.outputs.infrastructure_test_execution_state }}
+      infrastructure_test_result: ${{ steps.environment-lifecycle.outputs.infrastructure_test_result }}
+      api_test_execution_state: ${{ steps.environment-lifecycle.outputs.api_test_execution_state }}
+      api_test_result: ${{ steps.environment-lifecycle.outputs.api_test_result }}
       cleanup_state: ${{ steps.environment-lifecycle.outputs.cleanup_state }}
       cleanup_warning: ${{ steps.environment-lifecycle.outputs.cleanup_warning }}
       cleanup_target_count: ${{ steps.environment-lifecycle.outputs.cleanup_target_count }}
       remaining_resource_count: ${{ steps.environment-lifecycle.outputs.remaining_resource_count }}
+      missing_evidence_count: ${{ steps.environment-lifecycle.outputs.missing_evidence_count }}
+      environment_evidence_complete: ${{ steps.environment-lifecycle.outputs.environment_evidence_complete }}
       residue_verification_result: ${{ steps.environment-lifecycle.outputs.residue_verification_result }}
       evidence_artifact_name: ${{ steps.environment-lifecycle.outputs.evidence_artifact_name }}
       evidence_artifact_uploaded: ${{ steps.upload-environment-evidence.outcome == 'success' }}
@@ -473,10 +479,16 @@ jobs:
           ENVIRONMENT_CREATION_STATE: ${{ needs.environment-lifecycle.outputs.environment_creation_state }}
           READINESS_CHECK_EXECUTION_STATE: ${{ needs.environment-lifecycle.outputs.readiness_check_execution_state }}
           READINESS_CHECK_RESULT: ${{ needs.environment-lifecycle.outputs.readiness_check_result }}
+          INFRASTRUCTURE_TEST_EXECUTION_STATE: ${{ needs.environment-lifecycle.outputs.infrastructure_test_execution_state }}
+          INFRASTRUCTURE_TEST_RESULT: ${{ needs.environment-lifecycle.outputs.infrastructure_test_result }}
+          API_TEST_EXECUTION_STATE: ${{ needs.environment-lifecycle.outputs.api_test_execution_state }}
+          API_TEST_RESULT: ${{ needs.environment-lifecycle.outputs.api_test_result }}
           OVERALL_TEST_RESULT: ${{ needs.environment-lifecycle.outputs.overall_test_result }}
           CLEANUP_STATE: ${{ needs.environment-lifecycle.outputs.cleanup_state }}
           CLEANUP_WARNING: ${{ needs.environment-lifecycle.outputs.cleanup_warning }}
           REMAINING_RESOURCE_COUNT: ${{ needs.environment-lifecycle.outputs.remaining_resource_count }}
+          MISSING_EVIDENCE_COUNT: ${{ needs.environment-lifecycle.outputs.missing_evidence_count }}
+          ENVIRONMENT_EVIDENCE_COMPLETE: ${{ needs.environment-lifecycle.outputs.environment_evidence_complete }}
           ISSUE_NUMBER: ${{ needs.governance-check.outputs.issue_number }}
           TARGET_VERSION: ${{ needs.governance-check.outputs.target_version }}
           REQUIRED_FINAL_STAGE: ${{ needs.governance-check.outputs.required_final_stage }}

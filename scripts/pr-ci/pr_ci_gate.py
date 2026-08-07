@@ -11,6 +11,9 @@ from typing import Any
 from pr_ci_common import append_step_summary
 
 
+MISSING_FAILURE_VALUE = "(missing)"
+
+
 def env_value(name: str, env: dict[str, str]) -> str:
     return env.get(name, "").strip()
 
@@ -24,14 +27,18 @@ def require_value(reasons: list[str], label: str, value: str) -> None:
         reasons.append(f"required value {label} is missing")
 
 
+def failure_value(value: str) -> str:
+    return value or MISSING_FAILURE_VALUE
+
+
 def require_success_job(reasons: list[str], job_name: str, result: str) -> None:
     if result != "success":
-        reasons.append(f"{job_name} job result is {result or '<missing>'}")
+        reasons.append(f"{job_name} job result is {failure_value(result)}")
 
 
 def require_logical_success(reasons: list[str], label: str, result: str) -> None:
     if result != "success":
-        reasons.append(f"{label} is {result or '<missing>'}")
+        reasons.append(f"{label} is {failure_value(result)}")
 
 
 def require_uploaded_artifact(
@@ -45,6 +52,19 @@ def require_uploaded_artifact(
     require_value(reasons, f"{label} Artifact ID", artifact_id)
     if not is_true(uploaded):
         reasons.append(f"{label} Artifact upload did not succeed")
+
+
+def require_int_value(reasons: list[str], label: str, value: str, expected: int) -> None:
+    require_value(reasons, label, value)
+    if not value:
+        return
+    try:
+        actual = int(value)
+    except ValueError:
+        reasons.append(f"{label} is not an integer. actual={value}")
+        return
+    if actual != expected:
+        reasons.append(f"{label} is {actual}; expected={expected}")
 
 
 def evaluate_gate(env: dict[str, str]) -> dict[str, Any]:
@@ -109,7 +129,14 @@ def evaluate_gate(env: dict[str, str]) -> dict[str, Any]:
 
     environment_result = env_value("ENVIRONMENT_LIFECYCLE_RESULT", env)
     if environment_result != "success":
-        reasons.append(f"environment_lifecycle_result is {environment_result or '<missing>'}")
+        reasons.append(f"environment_lifecycle_result is {failure_value(environment_result)}")
+
+    environment_creation_state = env_value("ENVIRONMENT_CREATION_STATE", env)
+    if environment_creation_state != "Completed":
+        reasons.append(
+            "environment_creation_state is "
+            f"{failure_value(environment_creation_state)}"
+        )
 
     if not is_true(env_value("ENVIRONMENT_EVIDENCE_MANIFEST_FINALIZED", env)):
         reasons.append("environment evidence manifest was not finalized")
@@ -121,37 +148,64 @@ def evaluate_gate(env: dict[str, str]) -> dict[str, Any]:
         env_value("ENVIRONMENT_EVIDENCE_ARTIFACT_ID", env),
     )
 
-    environment_creation_state = env_value("ENVIRONMENT_CREATION_STATE", env)
-    if environment_creation_state != "Completed":
-        reasons.append(
-            "environment_creation_state is "
-            f"{environment_creation_state or '<missing>'}"
-        )
+    cleanup_state = env_value("CLEANUP_STATE", env)
+    if cleanup_state not in ("Completed", "CompletedWithWarning"):
+        reasons.append(f"cleanup_state is {failure_value(cleanup_state)}")
+    if cleanup_state == "NotAttempted":
+        reasons.append("cleanup_state NotAttempted is not an acceptable cleanup warning")
 
     readiness_execution_state = env_value("READINESS_CHECK_EXECUTION_STATE", env)
     if readiness_execution_state != "Completed":
         reasons.append(
             "readiness_check_execution_state is "
-            f"{readiness_execution_state or '<missing>'}"
+            f"{failure_value(readiness_execution_state)}"
         )
 
     readiness_result = env_value("READINESS_CHECK_RESULT", env)
     if readiness_result != "Passed":
+        reasons.append(f"readiness_check_result is {failure_value(readiness_result)}")
+
+    infrastructure_execution_state = env_value("INFRASTRUCTURE_TEST_EXECUTION_STATE", env)
+    if infrastructure_execution_state != "Completed":
         reasons.append(
-            f"readiness_check_result is {readiness_result or '<missing>'}"
+            "infrastructure_test_execution_state is "
+            f"{failure_value(infrastructure_execution_state)}"
         )
+
+    infrastructure_result = env_value("INFRASTRUCTURE_TEST_RESULT", env)
+    if infrastructure_result != "Passed":
+        reasons.append(
+            f"infrastructure_test_result is {failure_value(infrastructure_result)}"
+        )
+
+    api_execution_state = env_value("API_TEST_EXECUTION_STATE", env)
+    if api_execution_state != "Completed":
+        reasons.append(f"api_test_execution_state is {failure_value(api_execution_state)}")
+
+    api_result = env_value("API_TEST_RESULT", env)
+    if api_result != "Passed":
+        reasons.append(f"api_test_result is {failure_value(api_result)}")
 
     overall_test_result = env_value("OVERALL_TEST_RESULT", env)
     if overall_test_result != "Passed":
         reasons.append(
-            f"overall_test_result is {overall_test_result or '<missing>'}"
+            f"overall_test_result is {failure_value(overall_test_result)}"
         )
 
-    cleanup_state = env_value("CLEANUP_STATE", env)
-    if cleanup_state not in ("Completed", "CompletedWithWarning"):
-        reasons.append(f"cleanup_state is {cleanup_state or '<missing>'}")
-    if cleanup_state == "NotAttempted":
-        reasons.append("cleanup_state NotAttempted is not an acceptable cleanup warning")
+    require_int_value(
+        reasons,
+        "remaining_resource_count",
+        env_value("REMAINING_RESOURCE_COUNT", env),
+        0,
+    )
+    require_int_value(
+        reasons,
+        "missing_evidence_count",
+        env_value("MISSING_EVIDENCE_COUNT", env),
+        0,
+    )
+    if not is_true(env_value("ENVIRONMENT_EVIDENCE_COMPLETE", env)):
+        reasons.append("environment evidence is not complete")
 
     gate_result = "success" if not reasons else "failure"
     return {
@@ -187,11 +241,27 @@ def build_summary(env: dict[str, str], result: dict[str, Any]) -> str:
                 f"{env_value('READINESS_CHECK_RESULT', env) or '<missing>'}"
             ),
         ),
+        (
+            "Infrastructure test",
+            (
+                f"{env_value('INFRASTRUCTURE_TEST_EXECUTION_STATE', env) or '<missing>'} / "
+                f"{env_value('INFRASTRUCTURE_TEST_RESULT', env) or '<missing>'}"
+            ),
+        ),
+        (
+            "API test",
+            (
+                f"{env_value('API_TEST_EXECUTION_STATE', env) or '<missing>'} / "
+                f"{env_value('API_TEST_RESULT', env) or '<missing>'}"
+            ),
+        ),
         ("Overall test result", env_value("OVERALL_TEST_RESULT", env) or "<missing>"),
         ("Cleanup state", env_value("CLEANUP_STATE", env) or "<missing>"),
         ("Cleanup warning", env_value("CLEANUP_WARNING", env) or "<missing>"),
         ("Remaining resource count", env_value("REMAINING_RESOURCE_COUNT", env) or "<missing>"),
         ("Environment lifecycle result", env_value("ENVIRONMENT_LIFECYCLE_RESULT", env) or "<missing>"),
+        ("Missing evidence count", env_value("MISSING_EVIDENCE_COUNT", env) or "<missing>"),
+        ("Environment evidence complete", env_value("ENVIRONMENT_EVIDENCE_COMPLETE", env) or "<missing>"),
         ("Build Artifact", env_value("BUILD_ARTIFACT_NAME", env) or "<missing>"),
         ("Build Artifact ID", env_value("BUILD_ARTIFACT_ID", env) or "<missing>"),
         ("Build Artifact version", env_value("BUILD_ARTIFACT_VERSION", env) or "<missing>"),
@@ -216,7 +286,7 @@ def build_summary(env: dict[str, str], result: dict[str, Any]) -> str:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate the Lesson 5.4 PR CI gate.")
+    parser = argparse.ArgumentParser(description="Evaluate the Lesson 5.5 PR CI gate.")
     parser.add_argument("--github-step-summary")
     return parser.parse_args(argv)
 

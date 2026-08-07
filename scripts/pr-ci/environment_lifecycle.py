@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import json
 import re
 import stat
@@ -14,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
+import xml.etree.ElementTree as ET
 
 from pr_ci_common import (
     append_step_summary,
@@ -41,7 +43,30 @@ EXPECTED_EVIDENCE = [
     "logs/docker-state-after-cleanup.txt",
     "logs/nginx.log",
     "logs/go-app.log",
+    "logs/infrastructure-test.log",
+    "logs/api-test.log",
+    "test-results/infrastructure-test-junit.xml",
+    "test-results/api-test-junit.xml",
+    "test-results/infrastructure-test-result.json",
+    "test-results/api-test-result.json",
+    "summaries/infrastructure-test-summary.md",
+    "summaries/api-test-summary.md",
 ]
+
+INFRASTRUCTURE_TEST_RESULT_FILES = [
+    "test-results/infrastructure-test-junit.xml",
+    "test-results/infrastructure-test-result.json",
+    "summaries/infrastructure-test-summary.md",
+]
+API_TEST_RESULT_FILES = [
+    "test-results/api-test-junit.xml",
+    "test-results/api-test-result.json",
+    "summaries/api-test-summary.md",
+]
+FORMAL_TEST_CASE_IDS = {
+    "infrastructure": [f"INF-{index:03d}" for index in range(1, 10)],
+    "api": [f"API-{index:03d}" for index in range(1, 5)],
+}
 
 MANAGED_BY = "github-actions-pr-ci"
 ENVIRONMENT_PATTERN_ID = "UT"
@@ -62,6 +87,8 @@ class CommandResult:
 class LifecycleState:
     failure_reasons: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    detected_missing_evidence: list[str] = field(default_factory=list)
+    evidence_missing_reasons: list[str] = field(default_factory=list)
     prerequisites_met: bool = False
     upstream_ready: bool = False
     artifact_ready: bool = False
@@ -71,6 +98,10 @@ class LifecycleState:
     readiness_check_result: str = "FailedBeforeCheck"
     test_execution_state: str = "NotStarted"
     overall_test_result: str = "FailedBeforeTest"
+    infrastructure_test_execution_state: str = "NotStarted"
+    infrastructure_test_result: str = "FailedBeforeTest"
+    api_test_execution_state: str = "NotStarted"
+    api_test_result: str = "FailedBeforeTest"
     cleanup_state: str = "NotAttempted"
     cleanup_warning: bool = False
     cleanup_target_count: int = 0
@@ -86,7 +117,9 @@ class LifecycleState:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the Lesson 5.4 disposable UT environment lifecycle.")
+    parser = argparse.ArgumentParser(
+        description="Run the Lesson 5.5 disposable UT environment lifecycle."
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--build-artifact-dir", required=True)
     parser.add_argument("--repository", required=True)
@@ -134,9 +167,17 @@ def environment_face_id(issue_number: str, workflow_run_id: str, run_attempt: st
 
 
 def derive_overall_test_result(state: LifecycleState) -> str:
-    if state.readiness_check_result == "Passed":
+    if (
+        state.readiness_check_result == "Passed"
+        and state.infrastructure_test_result == "Passed"
+        and state.api_test_result == "Passed"
+    ):
         return "Passed"
-    if state.readiness_check_result == "FailedBeforeCheck":
+    if (
+        state.readiness_check_result == "FailedBeforeCheck"
+        and state.infrastructure_test_result == "FailedBeforeTest"
+        and state.api_test_result == "FailedBeforeTest"
+    ):
         return "FailedBeforeTest"
     return "Failed"
 
@@ -162,6 +203,330 @@ def write_log(path: Path, message: str) -> None:
     path.write_text(message if message.endswith("\n") else message + "\n", encoding="utf-8")
 
 
+def record_missing_evidence(state: LifecycleState, relative_path: str, reason: str) -> None:
+    if relative_path not in state.detected_missing_evidence:
+        state.detected_missing_evidence.append(relative_path)
+    state.evidence_missing_reasons.append(f"{relative_path}: {reason}")
+
+
+def write_junit_placeholder(
+    path: Path,
+    *,
+    suite_name: str,
+    case_name: str,
+    result: str,
+    message: str,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    failures = "1" if result == "Failed" else "0"
+    skipped = "1" if result in ("Skipped", "FailedBeforeTest") else "0"
+    suite = ET.Element(
+        "testsuite",
+        {
+            "name": suite_name,
+            "tests": "1",
+            "failures": failures,
+            "errors": "0",
+            "skipped": skipped,
+        },
+    )
+    case = ET.SubElement(
+        suite,
+        "testcase",
+        {
+            "classname": suite_name,
+            "name": case_name,
+        },
+    )
+    if result == "Failed":
+        failure = ET.SubElement(case, "failure", {"message": message})
+        failure.text = message
+    elif result in ("Skipped", "FailedBeforeTest"):
+        skipped_element = ET.SubElement(case, "skipped", {"message": message})
+        skipped_element.text = message
+    tree = ET.ElementTree(suite)
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+
+
+def empty_formal_test_analysis(expected_case_ids: list[str]) -> dict[str, Any]:
+    return {
+        "counts": {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 0,
+        },
+        "expected_case_ids": expected_case_ids,
+        "collected_case_ids": [],
+        "missing_case_ids": expected_case_ids,
+        "unexpected_case_ids": [],
+        "duplicate_case_ids": [],
+        "property_missing_cases": [],
+        "test_cases": [],
+    }
+
+
+def short_junit_message(element: ET.Element | None) -> str:
+    if element is None:
+        return ""
+    message = element.attrib.get("message", "").strip()
+    if not message:
+        message = (element.text or "").strip().splitlines()[0] if (element.text or "").strip() else ""
+    return message[:240]
+
+
+def parse_junit_results(junit_path: Path, expected_case_ids: list[str]) -> dict[str, Any]:
+    root = ET.parse(junit_path).getroot()
+    test_cases: list[dict[str, Any]] = []
+    collected_case_ids: list[str] = []
+    property_missing_cases: list[str] = []
+    counts = {"total": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0}
+
+    for case in (element for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "testcase"):
+        counts["total"] += 1
+        classname = case.attrib.get("classname", "")
+        name = case.attrib.get("name", "")
+        case_label = f"{classname}::{name}" if classname else name
+        test_case_id = ""
+        for prop in (element for element in case.iter() if element.tag.rsplit("}", 1)[-1] == "property"):
+            if prop.attrib.get("name") == "test_case_id":
+                test_case_id = prop.attrib.get("value", "").strip()
+                break
+        if test_case_id:
+            collected_case_ids.append(test_case_id)
+        else:
+            property_missing_cases.append(case_label)
+
+        failure = next(
+            (child for child in case if child.tag.rsplit("}", 1)[-1] == "failure"),
+            None,
+        )
+        error = next(
+            (child for child in case if child.tag.rsplit("}", 1)[-1] == "error"),
+            None,
+        )
+        skipped = next(
+            (child for child in case if child.tag.rsplit("}", 1)[-1] == "skipped"),
+            None,
+        )
+        if failure is not None:
+            result = "Failed"
+            counts["failed"] += 1
+            message = short_junit_message(failure)
+        elif error is not None:
+            result = "Error"
+            counts["errors"] += 1
+            message = short_junit_message(error)
+        elif skipped is not None:
+            result = "Skipped"
+            counts["skipped"] += 1
+            message = short_junit_message(skipped)
+        else:
+            result = "Passed"
+            counts["passed"] += 1
+            message = ""
+        try:
+            duration = float(case.attrib.get("time", "0") or 0)
+        except ValueError:
+            duration = 0.0
+        test_cases.append(
+            {
+                "test_case_id": test_case_id,
+                "name": name,
+                "result": result,
+                "duration_seconds": duration,
+                "message": message,
+            }
+        )
+
+    seen: set[str] = set()
+    duplicate_case_ids: list[str] = []
+    for case_id in collected_case_ids:
+        if case_id in seen and case_id not in duplicate_case_ids:
+            duplicate_case_ids.append(case_id)
+        seen.add(case_id)
+    expected_set = set(expected_case_ids)
+    collected_set = set(collected_case_ids)
+    return {
+        "counts": counts,
+        "expected_case_ids": expected_case_ids,
+        "collected_case_ids": collected_case_ids,
+        "missing_case_ids": [case_id for case_id in expected_case_ids if case_id not in collected_set],
+        "unexpected_case_ids": list(dict.fromkeys(
+            case_id for case_id in collected_case_ids if case_id not in expected_set
+        )),
+        "duplicate_case_ids": duplicate_case_ids,
+        "property_missing_cases": property_missing_cases,
+        "test_cases": test_cases,
+    }
+
+
+def junit_integrity_reasons(analysis: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if analysis["missing_case_ids"]:
+        reasons.append("expected test case IDs are missing: " + ", ".join(analysis["missing_case_ids"]))
+    if analysis["unexpected_case_ids"]:
+        reasons.append("unexpected test case IDs were collected: " + ", ".join(analysis["unexpected_case_ids"]))
+    if analysis["duplicate_case_ids"]:
+        reasons.append("duplicate test case IDs were collected: " + ", ".join(analysis["duplicate_case_ids"]))
+    if analysis["property_missing_cases"]:
+        reasons.append(
+            "test_case_id property is missing for: "
+            + ", ".join(analysis["property_missing_cases"])
+        )
+    return reasons
+
+
+def write_test_result_artifacts(
+    *,
+    output_dir: Path,
+    test_key: str,
+    title: str,
+    execution_state: str,
+    result: str,
+    command: list[str],
+    returncode: int | None,
+    log_path: str,
+    junit_path: str,
+    result_path: str,
+    summary_path: str,
+    failure_reasons: list[str],
+    junit_analysis: dict[str, Any],
+    execution_mode: str,
+    skipped_reason: str = "",
+) -> dict[str, Any]:
+    payload = {
+        "execution_state": execution_state,
+        "result": result,
+        "command": command,
+        "returncode": returncode,
+        "log_path": log_path,
+        "junit_xml": junit_path if (output_dir / junit_path).exists() else "<missing>",
+        "summary": summary_path,
+        "failure_reasons": failure_reasons,
+        "skipped_reason": skipped_reason,
+        "execution_mode": execution_mode,
+        **junit_analysis,
+    }
+    write_json(output_dir / result_path, payload)
+
+    reasons = failure_reasons or ([skipped_reason] if skipped_reason else ["なし"])
+    reason_lines = "\n".join(f"- {reason}" for reason in reasons)
+    case_rows = [
+        "| Test case ID | Result | Name | Duration (s) | Message |",
+        "|---|---|---|---:|---|",
+    ]
+    for case in junit_analysis["test_cases"]:
+        message = case["message"].replace("|", "\\|")
+        case_rows.append(
+            f"| `{case['test_case_id'] or '<missing>'}` | `{case['result']}` | "
+            f"`{case['name']}` | `{case['duration_seconds']}` | {message or '-'} |"
+        )
+    if not junit_analysis["test_cases"]:
+        case_rows.append("| `<not-run>` | `<not-run>` | `<not-run>` | `0` | Formal test was not executed. |")
+    counts = junit_analysis["counts"]
+    summary = "\n".join(
+        [
+            f"# {title} Summary",
+            "",
+            "| Item | Value |",
+            "|---|---|",
+            f"| Execution state | `{execution_state}` |",
+            f"| Result | `{result}` |",
+            f"| Return code | `{returncode if returncode is not None else '<not-run>'}` |",
+            f"| Execution mode | `{execution_mode}` |",
+            f"| Expected case count | `{len(junit_analysis['expected_case_ids'])}` |",
+            f"| Collected case count | `{len(junit_analysis['collected_case_ids'])}` |",
+            f"| Passed | `{counts['passed']}` |",
+            f"| Failed | `{counts['failed']}` |",
+            f"| Errors | `{counts['errors']}` |",
+            f"| Skipped | `{counts['skipped']}` |",
+            f"| Log | `{log_path}` |",
+            f"| JUnit XML | `{payload['junit_xml']}` |",
+            "",
+            "## Case results",
+            "",
+            *case_rows,
+            "",
+            "## Reasons",
+            "",
+            reason_lines,
+            "",
+        ]
+    )
+    (output_dir / summary_path).parent.mkdir(parents=True, exist_ok=True)
+    (output_dir / summary_path).write_text(summary, encoding="utf-8")
+    return payload
+
+
+def write_skipped_test_artifacts(
+    *,
+    output_dir: Path,
+    test_key: str,
+    title: str,
+    result: str,
+    reason: str,
+) -> dict[str, Any]:
+    junit_path = f"test-results/{test_key}-test-junit.xml"
+    result_path = f"test-results/{test_key}-test-result.json"
+    summary_path = f"summaries/{test_key}-test-summary.md"
+    log_path = f"logs/{test_key}-test.log"
+    write_log(output_dir / log_path, reason)
+    write_junit_placeholder(
+        output_dir / junit_path,
+        suite_name=f"{test_key}-test",
+        case_name=f"{test_key}_test_not_run",
+        result=result,
+        message=reason,
+    )
+    return write_test_result_artifacts(
+        output_dir=output_dir,
+        test_key=test_key,
+        title=title,
+        execution_state="Skipped",
+        result=result,
+        command=[],
+        returncode=None,
+        log_path=log_path,
+        junit_path=junit_path,
+        result_path=result_path,
+        summary_path=summary_path,
+        failure_reasons=[],
+        junit_analysis=empty_formal_test_analysis(FORMAL_TEST_CASE_IDS[test_key]),
+        execution_mode="not_run_placeholder",
+        skipped_reason=reason,
+    )
+
+
+def ensure_unstarted_test_artifacts(output_dir: Path, state: LifecycleState) -> None:
+    reason = "Formal tests did not start because environment lifecycle failed before test execution."
+    if state.readiness_check_execution_state == "NotStarted":
+        state.readiness_check_execution_state = "Skipped"
+        state.readiness_check_result = "FailedBeforeCheck"
+    if state.infrastructure_test_execution_state == "NotStarted":
+        write_skipped_test_artifacts(
+            output_dir=output_dir,
+            test_key="infrastructure",
+            title="infrastructure-test",
+            result="FailedBeforeTest",
+            reason=reason,
+        )
+        state.infrastructure_test_execution_state = "Skipped"
+        state.infrastructure_test_result = "FailedBeforeTest"
+    if state.api_test_execution_state == "NotStarted":
+        write_skipped_test_artifacts(
+            output_dir=output_dir,
+            test_key="api",
+            title="api-test",
+            result="FailedBeforeTest",
+            reason=reason,
+        )
+        state.api_test_execution_state = "Skipped"
+        state.api_test_result = "FailedBeforeTest"
+    state.overall_test_result = derive_overall_test_result(state)
+
+
 def run_command(
     args: list[str],
     *,
@@ -169,6 +534,7 @@ def run_command(
     log_path: Path,
     append: bool = False,
     check: bool = False,
+    env: dict[str, str] | None = None,
 ) -> CommandResult:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -178,6 +544,7 @@ def run_command(
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            env=env,
             check=False,
         )
         result = CommandResult(args, completed.returncode, completed.stdout or "")
@@ -405,7 +772,7 @@ def run_ansible_and_checks(
     output_dir: Path,
     logs_dir: Path,
     outputs: dict[str, str],
-) -> None:
+) -> bool:
     inventory = output_dir / "inventory.yml"
     if not inventory.exists():
         state.failure_reasons.append("Ansible inventory was not created")
@@ -413,8 +780,7 @@ def run_ansible_and_checks(
         state.readiness_check_execution_state = "Skipped"
         state.readiness_check_result = "FailedBeforeCheck"
         state.test_execution_state = "Failed"
-        state.overall_test_result = derive_overall_test_result(state)
-        return
+        return False
 
     ansible_log = logs_dir / "ansible.log"
     infra = run_command(
@@ -429,8 +795,7 @@ def run_ansible_and_checks(
         state.readiness_check_execution_state = "Skipped"
         state.readiness_check_result = "FailedBeforeCheck"
         state.test_execution_state = "Failed"
-        state.overall_test_result = derive_overall_test_result(state)
-        return
+        return False
 
     binary_path = Path(args.build_artifact_dir) / "go-app-linux-amd64"
     deploy = run_command(
@@ -454,8 +819,7 @@ def run_ansible_and_checks(
         state.readiness_check_execution_state = "Skipped"
         state.readiness_check_result = "FailedBeforeCheck"
         state.test_execution_state = "Failed"
-        state.overall_test_result = derive_overall_test_result(state)
-        return
+        return False
 
     state.environment_creation_state = "Completed"
     state.readiness_check_execution_state = "InProgress"
@@ -466,8 +830,7 @@ def run_ansible_and_checks(
         state.readiness_check_execution_state = "Failed"
         state.readiness_check_result = "Failed"
         state.test_execution_state = "Failed"
-        state.overall_test_result = derive_overall_test_result(state)
-        return
+        return False
 
     check_log = logs_dir / "startup-connectivity-check.log"
     checks = [
@@ -539,9 +902,211 @@ def run_ansible_and_checks(
             state.failure_reasons.append("host nginx health request failed")
             failed = True
 
-    state.readiness_check_execution_state = "Failed" if failed else "Completed"
-    state.readiness_check_result = "Failed" if failed else "Passed"
-    state.test_execution_state = state.readiness_check_execution_state
+    if failed:
+        state.readiness_check_execution_state = "Failed"
+        state.readiness_check_result = "Failed"
+        state.test_execution_state = "Failed"
+        return False
+    state.readiness_check_execution_state = "Completed"
+    state.readiness_check_result = "Passed"
+    return True
+
+
+def run_pytest_suite(
+    *,
+    state: LifecycleState,
+    test_key: str,
+    title: str,
+    command: list[str],
+    env: dict[str, str],
+    root: Path,
+    output_dir: Path,
+) -> tuple[str, str]:
+    log_path = f"logs/{test_key}-test.log"
+    junit_path = f"test-results/{test_key}-test-junit.xml"
+    result_path = f"test-results/{test_key}-test-result.json"
+    summary_path = f"summaries/{test_key}-test-summary.md"
+    result = run_command(
+        command,
+        cwd=root,
+        log_path=output_dir / log_path,
+        env=env,
+    )
+    failure_reasons: list[str] = []
+    if result.returncode != 0:
+        failure_reasons.append(f"{title} exited with rc={result.returncode}")
+    junit_exists = (output_dir / junit_path).exists()
+    if not junit_exists:
+        reason = f"JUnit XML was not created at {junit_path}"
+        record_missing_evidence(state, junit_path, reason)
+        failure_reasons.append(reason)
+        write_junit_placeholder(
+            output_dir / junit_path,
+            suite_name=f"{test_key}-test",
+            case_name=f"{test_key}_test_junit_missing",
+            result="Failed",
+            message=reason,
+        )
+
+    if junit_exists:
+        try:
+            junit_analysis = parse_junit_results(
+                output_dir / junit_path,
+                FORMAL_TEST_CASE_IDS[test_key],
+            )
+        except (ET.ParseError, OSError, ValueError) as exc:
+            reason = f"JUnit XML could not be parsed: {exc}"
+            failure_reasons.append(reason)
+            record_missing_evidence(state, junit_path, reason)
+            junit_analysis = empty_formal_test_analysis(FORMAL_TEST_CASE_IDS[test_key])
+        else:
+            failure_reasons.extend(junit_integrity_reasons(junit_analysis))
+            counts = junit_analysis["counts"]
+            if counts["failed"] or counts["errors"] or counts["skipped"]:
+                failure_reasons.append(
+                    "formal test case results are incomplete: "
+                    f"failed={counts['failed']} errors={counts['errors']} skipped={counts['skipped']}"
+                )
+    else:
+        junit_analysis = empty_formal_test_analysis(FORMAL_TEST_CASE_IDS[test_key])
+
+    execution_state = "Failed" if failure_reasons else "Completed"
+    test_result = "Failed" if failure_reasons else "Passed"
+    write_test_result_artifacts(
+        output_dir=output_dir,
+        test_key=test_key,
+        title=title,
+        execution_state=execution_state,
+        result=test_result,
+        command=result.command,
+        returncode=result.returncode,
+        log_path=log_path,
+        junit_path=junit_path,
+        result_path=result_path,
+        summary_path=summary_path,
+        failure_reasons=failure_reasons,
+        junit_analysis=junit_analysis,
+        execution_mode="pytest",
+    )
+    return execution_state, test_result
+
+
+def run_formal_tests(
+    args: argparse.Namespace,
+    state: LifecycleState,
+    *,
+    root: Path,
+    output_dir: Path,
+    outputs: dict[str, str],
+) -> None:
+    container_name = outputs.get("container_name", "")
+    network_name = outputs.get("network_name", "")
+    host_http_url = outputs.get("host_http_url", "")
+    if not container_name or not network_name or not host_http_url:
+        reason = "Terraform outputs required for formal tests are incomplete."
+        state.failure_reasons.append(reason)
+        write_skipped_test_artifacts(
+            output_dir=output_dir,
+            test_key="infrastructure",
+            title="infrastructure-test",
+            result="FailedBeforeTest",
+            reason=reason,
+        )
+        write_skipped_test_artifacts(
+            output_dir=output_dir,
+            test_key="api",
+            title="api-test",
+            result="FailedBeforeTest",
+            reason=reason,
+        )
+        state.infrastructure_test_execution_state = "Skipped"
+        state.infrastructure_test_result = "FailedBeforeTest"
+        state.api_test_execution_state = "Skipped"
+        state.api_test_result = "FailedBeforeTest"
+        state.test_execution_state = "Failed"
+        state.overall_test_result = derive_overall_test_result(state)
+        return
+
+    test_env = os.environ.copy()
+    test_env.update(
+        {
+            "TARGET_CONTAINER_NAME": container_name,
+            "TARGET_NETWORK_NAME": network_name,
+            "EXPECTED_ENVIRONMENT_FACE_ID": state.environment_face_id,
+            "EXPECTED_TEST_RUN_ID": args.test_run_id,
+            "EXPECTED_ISSUE_NUMBER": args.issue_number,
+            "EXPECTED_APP_VERSION": args.build_artifact_version,
+            "APP_VERSION": args.build_artifact_version,
+            "HOST_HTTP_URL": host_http_url,
+            "API_BASE_URL": host_http_url,
+            "EXPECTED_MANAGED_BY": MANAGED_BY,
+        }
+    )
+
+    infra_command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--junitxml",
+        str(output_dir / "test-results" / "infrastructure-test-junit.xml"),
+        f"--hosts=docker://{container_name}",
+        "tests/infrastructure",
+    ]
+    infra_state, infra_result = run_pytest_suite(
+        state=state,
+        test_key="infrastructure",
+        title="infrastructure-test",
+        command=infra_command,
+        env=test_env,
+        root=root,
+        output_dir=output_dir,
+    )
+    state.infrastructure_test_execution_state = infra_state
+    state.infrastructure_test_result = infra_result
+    if infra_result != "Passed":
+        state.failure_reasons.append("infrastructure-test failed")
+        reason = "API test was skipped because infrastructure-test did not pass."
+        write_skipped_test_artifacts(
+            output_dir=output_dir,
+            test_key="api",
+            title="api-test",
+            result="Skipped",
+            reason=reason,
+        )
+        state.api_test_execution_state = "Skipped"
+        state.api_test_result = "Skipped"
+        state.test_execution_state = "Failed"
+        state.overall_test_result = derive_overall_test_result(state)
+        return
+
+    api_command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--junitxml",
+        str(output_dir / "test-results" / "api-test-junit.xml"),
+        "tests/api",
+    ]
+    api_state, api_result = run_pytest_suite(
+        state=state,
+        test_key="api",
+        title="api-test",
+        command=api_command,
+        env=test_env,
+        root=root,
+        output_dir=output_dir,
+    )
+    state.api_test_execution_state = api_state
+    state.api_test_result = api_result
+    if api_result != "Passed":
+        state.failure_reasons.append("api-test failed")
+        state.test_execution_state = "Failed"
+        state.overall_test_result = derive_overall_test_result(state)
+        return
+
+    state.test_execution_state = "Completed"
     state.overall_test_result = derive_overall_test_result(state)
 
 
@@ -723,6 +1288,8 @@ def build_summary(manifest: dict[str, Any], result_payload: dict[str, Any]) -> s
             f"| Environment face ID | `{manifest['environment_face_id_or_not_created']}` |",
             f"| Environment creation state | `{manifest['environment_creation_state']}` |",
             f"| Readiness check | `{manifest['readiness_check_execution_state']} / {manifest['readiness_check_result']}` |",
+            f"| Infrastructure test | `{manifest['infrastructure_test_execution_state']} / {manifest['infrastructure_test_result']}` |",
+            f"| API test | `{manifest['api_test_execution_state']} / {manifest['api_test_result']}` |",
             f"| Overall test result | `{manifest['overall_test_result']}` |",
             f"| Cleanup state | `{manifest['cleanup_state']}` |",
             f"| Remaining resource count | `{manifest['remaining_resource_count']}` |",
@@ -730,6 +1297,8 @@ def build_summary(manifest: dict[str, Any], result_payload: dict[str, Any]) -> s
             f"| Test execution state (compatibility) | `{manifest['test_execution_state']}` |",
             f"| Cleanup target count | `{manifest['cleanup_target_count']}` |",
             f"| Cleanup warning | `{str(manifest['cleanup_warning']).lower()}` |",
+            f"| Missing evidence count | `{manifest['missing_evidence_count']}` |",
+            f"| Environment evidence complete | `{str(manifest['environment_evidence_complete']).lower()}` |",
             f"| Evidence Artifact | `{manifest['artifact_name']}` |",
             "",
             "## Failure reasons",
@@ -780,6 +1349,12 @@ def finalize_result(args: argparse.Namespace, state: LifecycleState, output_dir:
         target_version=args.target_version,
         required_final_stage=args.required_final_stage,
     )
+    merged_missing = sorted(
+        set(manifest.get("missing_evidence", [])) | set(state.detected_missing_evidence)
+    )
+    manifest["missing_evidence"] = merged_missing
+    manifest["missing_evidence_count"] = len(merged_missing)
+    manifest["environment_evidence_complete"] = manifest["missing_evidence_count"] == 0
     manifest.update(
         {
             "environment_face_id_or_not_created": state.environment_face_id or "NOT_CREATED",
@@ -790,6 +1365,12 @@ def finalize_result(args: argparse.Namespace, state: LifecycleState, output_dir:
             "overall_test_result": state.overall_test_result,
             "test_result": state.overall_test_result,
             "test_result_alias_of": "overall_test_result",
+            "infrastructure_test_execution_state": state.infrastructure_test_execution_state,
+            "infrastructure_test_result": state.infrastructure_test_result,
+            "infrastructure_test_result_files": INFRASTRUCTURE_TEST_RESULT_FILES,
+            "api_test_execution_state": state.api_test_execution_state,
+            "api_test_result": state.api_test_result,
+            "api_test_result_files": API_TEST_RESULT_FILES,
             "cleanup_state": state.cleanup_state,
             "cleanup_target_count": state.cleanup_target_count,
             "remaining_resource_count": state.remaining_resource_count,
@@ -809,6 +1390,12 @@ def finalize_result(args: argparse.Namespace, state: LifecycleState, output_dir:
         "artifact_ready": state.artifact_ready,
         "failure_reasons": state.failure_reasons,
         "warnings": state.warnings,
+        "evidence": {
+            "missing_evidence": manifest["missing_evidence"],
+            "missing_evidence_count": manifest["missing_evidence_count"],
+            "environment_evidence_complete": manifest["environment_evidence_complete"],
+            "evidence_missing_reasons": state.evidence_missing_reasons,
+        },
         "build_artifact": {
             "name": args.build_artifact_name,
             "id": args.build_artifact_id,
@@ -824,6 +1411,18 @@ def finalize_result(args: argparse.Namespace, state: LifecycleState, output_dir:
             "overall_test_result": state.overall_test_result,
             "test_result": state.overall_test_result,
             "test_result_alias_of": "overall_test_result",
+        },
+        "tests": {
+            "infrastructure": {
+                "execution_state": state.infrastructure_test_execution_state,
+                "result": state.infrastructure_test_result,
+                "result_files": INFRASTRUCTURE_TEST_RESULT_FILES,
+            },
+            "api": {
+                "execution_state": state.api_test_execution_state,
+                "result": state.api_test_result,
+                "result_files": API_TEST_RESULT_FILES,
+            },
         },
         "cleanup": {
             "cleanup_state": state.cleanup_state,
@@ -877,7 +1476,6 @@ def main(argv: list[str]) -> int:
                 state.environment_creation_state = "Failed"
                 state.readiness_check_execution_state = "Skipped"
                 state.readiness_check_result = "FailedBeforeCheck"
-                state.overall_test_result = derive_overall_test_result(state)
             else:
                 outputs = run_terraform_apply(
                     args,
@@ -890,7 +1488,7 @@ def main(argv: list[str]) -> int:
                 )
 
             if state.environment_creation_state == "InProgress":
-                run_ansible_and_checks(
+                startup_ready = run_ansible_and_checks(
                     args,
                     state,
                     root=root,
@@ -898,6 +1496,14 @@ def main(argv: list[str]) -> int:
                     logs_dir=logs_dir,
                     outputs=outputs,
                 )
+                if startup_ready:
+                    run_formal_tests(
+                        args,
+                        state,
+                        root=root,
+                        output_dir=output_dir,
+                        outputs=outputs,
+                    )
         else:
             write_log(logs_dir / "terraform-plan.log", "Upstream prerequisites were not met; Terraform plan was skipped.")
             write_log(logs_dir / "terraform-apply.log", "Upstream prerequisites were not met; Terraform apply was skipped.")
@@ -907,12 +1513,9 @@ def main(argv: list[str]) -> int:
         collect_logs(root, logs_dir, outputs.get("container_name", "") if outputs else "")
         cleanup(args, state, root=root, logs_dir=logs_dir, label_filter=label_filter, image_name=image_name)
         verify_residue(state, root=root, logs_dir=logs_dir, label_filter=label_filter)
+        ensure_unstarted_test_artifacts(output_dir, state)
+        state.overall_test_result = derive_overall_test_result(state)
         ensure_placeholder_logs(logs_dir)
-
-    if state.readiness_check_execution_state == "NotStarted":
-        state.readiness_check_execution_state = "Skipped"
-        state.readiness_check_result = "FailedBeforeCheck"
-    state.overall_test_result = derive_overall_test_result(state)
 
     manifest, result_payload, summary = finalize_result(args, state, output_dir)
     write_json(output_dir / "manifest.json", manifest)
@@ -933,10 +1536,16 @@ def main(argv: list[str]) -> int:
             "overall_test_result": state.overall_test_result,
             "test_result": state.overall_test_result,
             "test_result_alias_of": "overall_test_result",
+            "infrastructure_test_execution_state": state.infrastructure_test_execution_state,
+            "infrastructure_test_result": state.infrastructure_test_result,
+            "api_test_execution_state": state.api_test_execution_state,
+            "api_test_result": state.api_test_result,
             "cleanup_state": state.cleanup_state,
             "cleanup_warning": state.cleanup_warning,
             "cleanup_target_count": state.cleanup_target_count,
             "remaining_resource_count": state.remaining_resource_count,
+            "missing_evidence_count": manifest["missing_evidence_count"],
+            "environment_evidence_complete": manifest["environment_evidence_complete"],
             "residue_verification_result": state.residue_verification_result,
             "failure_reason_count": len(state.failure_reasons),
         },
