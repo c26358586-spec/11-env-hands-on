@@ -27,7 +27,7 @@
   ansible.builtin.file:
     src: /etc/nginx/sites-available/ms1-app.conf
     dest: /etc/nginx/sites-enabled/ms1-app.conf
-    state: hard
+    state: link
   register: nginx_site_link
 
 - name: Validate Nginx configuration
