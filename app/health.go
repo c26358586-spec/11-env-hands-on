@@ -23,7 +23,7 @@ func routes() http.Handler {
 
 func healthPayload() healthResponse {
 	return healthResponse{
-		Status:  "ok",
+		Status:"ok",
 		Service: "ms1-go-api",
 		Version: version,
 	}
