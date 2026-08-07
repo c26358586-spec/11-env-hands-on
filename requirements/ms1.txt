@@ -1,0 +1,8 @@
+# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
+
+ansible==13.8.0
+ansible-lint==26.4.0
+docker==7.1.0
+pytest==8.4.2
+pytest-testinfra==10.2.2
+requests==2.32.4
