@@ -1,0 +1,21 @@
+diff --git a/VERSION b/VERSION
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.0.0
++0.0.1
+diff --git a/scripts/pr-ci/environment_lifecycle.py b/scripts/pr-ci/environment_lifecycle.py
+--- a/scripts/pr-ci/environment_lifecycle.py
++++ b/scripts/pr-ci/environment_lifecycle.py
+@@ -985,4 +985,11 @@ def run_pytest_suite(
+         junit_analysis=junit_analysis,
+         execution_mode="pytest",
+     )
++    if test_key == "api":
++        missing_reason = "Lesson 5.6 evidence-missing scenario removed API test summary after generation."
++        summary_file = output_dir / summary_path
++        if summary_file.exists():
++            summary_file.unlink()
++        record_missing_evidence(state, summary_path, missing_reason)
++
+     return execution_state, test_result

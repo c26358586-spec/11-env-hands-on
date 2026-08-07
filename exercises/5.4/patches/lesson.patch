@@ -1,0 +1,2369 @@
+diff --git a/.github/workflows/pr-ci.yml b/.github/workflows/pr-ci.yml
+index 37d6722626b4f1ff44c1e9785a09a8a3e941c53c..f6cf226bf56edb6ca37c72e525ad4018234a4824 100644
+--- a/.github/workflows/pr-ci.yml
++++ b/.github/workflows/pr-ci.yml
+@@ -305,6 +305,141 @@ jobs:
+             exit 1
+           fi
+
++  environment-lifecycle:
++    name: environment-lifecycle
++    runs-on: ubuntu-latest
++    timeout-minutes: 30
++    needs:
++      - governance-check
++      - static-analysis
++      - unit-test
++      - build-package
++    if: always()
++    outputs:
++      environment_lifecycle_result: ${{ steps.environment-lifecycle.outputs.environment_lifecycle_result }}
++      environment_evidence_manifest_finalized: ${{ steps.environment-lifecycle.outputs.environment_evidence_manifest_finalized }}
++      environment_face_id: ${{ steps.environment-lifecycle.outputs.environment_face_id }}
++      environment_creation_state: ${{ steps.environment-lifecycle.outputs.environment_creation_state }}
++      readiness_check_execution_state: ${{ steps.environment-lifecycle.outputs.readiness_check_execution_state }}
++      readiness_check_result: ${{ steps.environment-lifecycle.outputs.readiness_check_result }}
++      test_execution_state: ${{ steps.environment-lifecycle.outputs.test_execution_state }}
++      overall_test_result: ${{ steps.environment-lifecycle.outputs.overall_test_result }}
++      test_result: ${{ steps.environment-lifecycle.outputs.test_result }}
++      test_result_alias_of: ${{ steps.environment-lifecycle.outputs.test_result_alias_of }}
++      cleanup_state: ${{ steps.environment-lifecycle.outputs.cleanup_state }}
++      cleanup_warning: ${{ steps.environment-lifecycle.outputs.cleanup_warning }}
++      cleanup_target_count: ${{ steps.environment-lifecycle.outputs.cleanup_target_count }}
++      remaining_resource_count: ${{ steps.environment-lifecycle.outputs.remaining_resource_count }}
++      residue_verification_result: ${{ steps.environment-lifecycle.outputs.residue_verification_result }}
++      evidence_artifact_name: ${{ steps.environment-lifecycle.outputs.evidence_artifact_name }}
++      evidence_artifact_uploaded: ${{ steps.upload-environment-evidence.outcome == 'success' }}
++      evidence_artifact_id: ${{ steps.upload-environment-evidence.outputs.artifact-id }}
++    steps:
++      - name: Checkout repository
++        # actions/checkout v4.2.2
++        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
++
++      - name: Set up Python
++        if: ${{ needs.governance-check.result == 'success' && needs.static-analysis.result == 'success' && needs.unit-test.result == 'success' && needs.build-package.result == 'success' && needs.build-package.outputs.build_artifact_uploaded == 'true' }}
++        # actions/setup-python v5.6.0
++        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
++        with:
++          python-version: "3.12.13"
++
++      - name: Set up Terraform
++        if: ${{ needs.governance-check.result == 'success' && needs.static-analysis.result == 'success' && needs.unit-test.result == 'success' && needs.build-package.result == 'success' && needs.build-package.outputs.build_artifact_uploaded == 'true' }}
++        # hashicorp/setup-terraform v3.1.2
++        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
++        with:
++          terraform_version: "1.14.1"
++          terraform_wrapper: false
++
++      - name: Install environment tool dependencies
++        if: ${{ needs.governance-check.result == 'success' && needs.static-analysis.result == 'success' && needs.unit-test.result == 'success' && needs.build-package.result == 'success' && needs.build-package.outputs.build_artifact_uploaded == 'true' }}
++        run: |
++          set -Eeuo pipefail
++          python3 -m pip install --upgrade pip
++          python3 -m pip install -r requirements/ms1.txt
++
++      - name: Download Go app Build Artifact
++        id: download-build-artifact
++        if: ${{ needs.governance-check.result == 'success' && needs.static-analysis.result == 'success' && needs.unit-test.result == 'success' && needs.build-package.result == 'success' && needs.build-package.outputs.build_artifact_uploaded == 'true' }}
++        # actions/download-artifact v4.3.0
++        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
++        with:
++          name: ${{ needs.build-package.outputs.build_artifact_name }}
++          path: ${{ runner.temp }}/pr-ci-downloaded-build-artifact
++
++      - name: Run environment lifecycle
++        id: environment-lifecycle
++        if: always()
++        continue-on-error: true
++        run: |
++          set -Eeuo pipefail
++          python3 scripts/pr-ci/environment_lifecycle.py \
++            --output-dir "${RUNNER_TEMP}/pr-ci-environment-evidence" \
++            --build-artifact-dir "${RUNNER_TEMP}/pr-ci-downloaded-build-artifact" \
++            --repository "${{ github.repository }}" \
++            --workflow-run-id "${{ github.run_id }}" \
++            --workflow-run-attempt "${{ github.run_attempt }}" \
++            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
++            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
++            --target-version "${{ needs.governance-check.outputs.target_version }}" \
++            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
++            --pr-number "${{ github.event.pull_request.number }}" \
++            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
++            --governance-job-result "${{ needs.governance-check.result }}" \
++            --governance-result "${{ needs.governance-check.outputs.governance_result }}" \
++            --static-analysis-job-result "${{ needs.static-analysis.result }}" \
++            --static-analysis-result "${{ needs.static-analysis.outputs.static_analysis_result }}" \
++            --unit-test-job-result "${{ needs.unit-test.result }}" \
++            --unit-test-result "${{ needs.unit-test.outputs.unit_test_result }}" \
++            --build-package-job-result "${{ needs.build-package.result }}" \
++            --build-package-result "${{ needs.build-package.outputs.build_package_result }}" \
++            --build-artifact-name "${{ needs.build-package.outputs.build_artifact_name }}" \
++            --build-artifact-id "${{ needs.build-package.outputs.build_artifact_id }}" \
++            --build-artifact-version "${{ needs.build-package.outputs.build_artifact_version }}" \
++            --build-artifact-checksum "${{ needs.build-package.outputs.build_artifact_checksum }}" \
++            --build-artifact-uploaded "${{ needs.build-package.outputs.build_artifact_uploaded }}" \
++            --github-output "${GITHUB_OUTPUT}" \
++            --github-step-summary "${GITHUB_STEP_SUMMARY}"
++
++      - name: Upload environment evidence
++        id: upload-environment-evidence
++        if: always()
++        # actions/upload-artifact v4.6.2
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
++        with:
++          name: ${{ steps.environment-lifecycle.outputs.evidence_artifact_name || format('evidence-environment_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
++          path: ${{ runner.temp }}/pr-ci-environment-evidence/
++          if-no-files-found: error
++          retention-days: 30
++
++      - name: Enforce environment lifecycle result
++        if: always()
++        env:
++          ENVIRONMENT_LIFECYCLE_RESULT: ${{ steps.environment-lifecycle.outputs.environment_lifecycle_result }}
++          CLEANUP_STATE: ${{ steps.environment-lifecycle.outputs.cleanup_state }}
++          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-environment-evidence.outcome == 'success' }}
++        run: |
++          set -Eeuo pipefail
++          case "${ENVIRONMENT_LIFECYCLE_RESULT:-}" in
++            success|skipped_prerequisites)
++              ;;
++            *)
++              echo "ERROR: environment-lifecycle result is ${ENVIRONMENT_LIFECYCLE_RESULT:-<missing>}" >&2
++              exit 1
++              ;;
++          esac
++          if [ "${CLEANUP_STATE:-}" = "NotAttempted" ] || [ -z "${CLEANUP_STATE:-}" ]; then
++            echo "ERROR: cleanup_state is ${CLEANUP_STATE:-<missing>}" >&2
++            exit 1
++          fi
++          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
++            echo "ERROR: environment evidence Artifact upload did not succeed." >&2
++            exit 1
++          fi
++
+   pr-ci-gate:
+     name: pr-ci-gate
+     runs-on: ubuntu-latest
+@@ -314,19 +449,34 @@ jobs:
+       - static-analysis
+       - unit-test
+       - build-package
++      - environment-lifecycle
+     if: always()
+     steps:
++      - name: Checkout repository
++        # actions/checkout v4.2.2
++        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
++
+       - name: Evaluate PR CI gate
+         env:
+           GOVERNANCE_JOB_RESULT: ${{ needs.governance-check.result }}
+           STATIC_ANALYSIS_JOB_RESULT: ${{ needs.static-analysis.result }}
+           UNIT_TEST_JOB_RESULT: ${{ needs.unit-test.result }}
+           BUILD_PACKAGE_JOB_RESULT: ${{ needs.build-package.result }}
++          ENVIRONMENT_LIFECYCLE_JOB_RESULT: ${{ needs.environment-lifecycle.result }}
+           TEST_RUN_ID: ${{ needs.governance-check.outputs.test_run_id }}
+           GOVERNANCE_RESULT: ${{ needs.governance-check.outputs.governance_result }}
+           STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.outputs.static_analysis_result }}
+           UNIT_TEST_RESULT: ${{ needs.unit-test.outputs.unit_test_result }}
+           BUILD_PACKAGE_RESULT: ${{ needs.build-package.outputs.build_package_result }}
++          ENVIRONMENT_LIFECYCLE_RESULT: ${{ needs.environment-lifecycle.outputs.environment_lifecycle_result }}
++          ENVIRONMENT_EVIDENCE_MANIFEST_FINALIZED: ${{ needs.environment-lifecycle.outputs.environment_evidence_manifest_finalized }}
++          ENVIRONMENT_CREATION_STATE: ${{ needs.environment-lifecycle.outputs.environment_creation_state }}
++          READINESS_CHECK_EXECUTION_STATE: ${{ needs.environment-lifecycle.outputs.readiness_check_execution_state }}
++          READINESS_CHECK_RESULT: ${{ needs.environment-lifecycle.outputs.readiness_check_result }}
++          OVERALL_TEST_RESULT: ${{ needs.environment-lifecycle.outputs.overall_test_result }}
++          CLEANUP_STATE: ${{ needs.environment-lifecycle.outputs.cleanup_state }}
++          CLEANUP_WARNING: ${{ needs.environment-lifecycle.outputs.cleanup_warning }}
++          REMAINING_RESOURCE_COUNT: ${{ needs.environment-lifecycle.outputs.remaining_resource_count }}
+           ISSUE_NUMBER: ${{ needs.governance-check.outputs.issue_number }}
+           TARGET_VERSION: ${{ needs.governance-check.outputs.target_version }}
+           REQUIRED_FINAL_STAGE: ${{ needs.governance-check.outputs.required_final_stage }}
+@@ -347,6 +497,9 @@ jobs:
+           BUILD_ARTIFACT_ID: ${{ needs.build-package.outputs.build_artifact_id }}
+           BUILD_ARTIFACT_VERSION: ${{ needs.build-package.outputs.build_artifact_version }}
+           BUILD_ARTIFACT_CHECKSUM: ${{ needs.build-package.outputs.build_artifact_checksum }}
++          ENVIRONMENT_EVIDENCE_ARTIFACT_NAME: ${{ needs.environment-lifecycle.outputs.evidence_artifact_name }}
++          ENVIRONMENT_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.environment-lifecycle.outputs.evidence_artifact_uploaded }}
++          ENVIRONMENT_EVIDENCE_ARTIFACT_ID: ${{ needs.environment-lifecycle.outputs.evidence_artifact_id }}
+           PR_NUMBER: ${{ github.event.pull_request.number }}
+           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+@@ -354,139 +507,5 @@ jobs:
+           WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+         run: |
+           set -Eeuo pipefail
+-
+-          gate_result="success"
+-          reasons=()
+-
+-          require_value() {
+-            local label="$1"
+-            local value="${2:-}"
+-            if [ -z "${value}" ]; then
+-              gate_result="failure"
+-              reasons+=("required value ${label} is missing")
+-            fi
+-          }
+-
+-          require_success_job() {
+-            local job_name="$1"
+-            local result="${2:-}"
+-            if [ "${result}" != "success" ]; then
+-              gate_result="failure"
+-              reasons+=("${job_name} job result is ${result:-<missing>}")
+-            fi
+-          }
+-
+-          require_logical_success() {
+-            local label="$1"
+-            local result="${2:-}"
+-            if [ "${result}" != "success" ]; then
+-              gate_result="failure"
+-              reasons+=("${label} is ${result:-<missing>}")
+-            fi
+-          }
+-
+-          require_uploaded_artifact() {
+-            local label="$1"
+-            local uploaded="${2:-}"
+-            local name="${3:-}"
+-            local artifact_id="${4:-}"
+-            require_value "${label} Artifact name" "${name}"
+-            require_value "${label} Artifact ID" "${artifact_id}"
+-            if [ "${uploaded}" != "true" ]; then
+-              gate_result="failure"
+-              reasons+=("${label} Artifact upload did not succeed")
+-            fi
+-          }
+-
+-          require_success_job "governance-check" "${GOVERNANCE_JOB_RESULT}"
+-          require_success_job "static-analysis" "${STATIC_ANALYSIS_JOB_RESULT}"
+-          require_success_job "unit-test" "${UNIT_TEST_JOB_RESULT}"
+-          require_success_job "build-package" "${BUILD_PACKAGE_JOB_RESULT}"
+-
+-          for required_name in \
+-            TEST_RUN_ID \
+-            ISSUE_NUMBER \
+-            TARGET_VERSION \
+-            REQUIRED_FINAL_STAGE; do
+-            require_value "${required_name}" "${!required_name:-}"
+-          done
+-
+-          require_logical_success "governance_result" "${GOVERNANCE_RESULT:-}"
+-          require_logical_success "static_analysis_result" "${STATIC_ANALYSIS_RESULT:-}"
+-          require_logical_success "unit_test_result" "${UNIT_TEST_RESULT:-}"
+-          require_logical_success "build_package_result" "${BUILD_PACKAGE_RESULT:-}"
+-
+-          require_uploaded_artifact \
+-            "governance evidence" \
+-            "${GOVERNANCE_EVIDENCE_ARTIFACT_UPLOADED:-}" \
+-            "${GOVERNANCE_EVIDENCE_ARTIFACT_NAME:-}" \
+-            "${GOVERNANCE_EVIDENCE_ARTIFACT_ID:-}"
+-          require_uploaded_artifact \
+-            "static-analysis evidence" \
+-            "${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_UPLOADED:-}" \
+-            "${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME:-}" \
+-            "${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_ID:-}"
+-          require_uploaded_artifact \
+-            "unit-test evidence" \
+-            "${UNIT_TEST_EVIDENCE_ARTIFACT_UPLOADED:-}" \
+-            "${UNIT_TEST_EVIDENCE_ARTIFACT_NAME:-}" \
+-            "${UNIT_TEST_EVIDENCE_ARTIFACT_ID:-}"
+-          require_uploaded_artifact \
+-            "build-package evidence" \
+-            "${BUILD_PACKAGE_EVIDENCE_ARTIFACT_UPLOADED:-}" \
+-            "${BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME:-}" \
+-            "${BUILD_PACKAGE_EVIDENCE_ARTIFACT_ID:-}"
+-          require_uploaded_artifact \
+-            "Build" \
+-            "${BUILD_ARTIFACT_UPLOADED:-}" \
+-            "${BUILD_ARTIFACT_NAME:-}" \
+-            "${BUILD_ARTIFACT_ID:-}"
+-          require_value "Build Artifact version" "${BUILD_ARTIFACT_VERSION:-}"
+-          require_value "Build Artifact checksum" "${BUILD_ARTIFACT_CHECKSUM:-}"
+-
+-          {
+-            echo "# pr-ci-gate Summary"
+-            echo
+-            echo "| Item | Value |"
+-            echo "|---|---|"
+-            echo "| Gate result | \`${gate_result}\` |"
+-            echo "| Pull Request | \`#${PR_NUMBER:-<missing>}\` |"
+-            echo "| Branch | \`${PR_HEAD_REF:-<missing>}\` |"
+-            echo "| Head SHA | \`${PR_HEAD_SHA:-<missing>}\` |"
+-            echo "| Test run ID | \`${TEST_RUN_ID:-<missing>}\` |"
+-            echo "| Issue | \`${ISSUE_NUMBER:-<missing>}\` |"
+-            echo "| target_version | \`${TARGET_VERSION:-<missing>}\` |"
+-            echo "| required_final_stage | \`${REQUIRED_FINAL_STAGE:-<missing>}\` |"
+-            echo "| Workflow run ID | \`${WORKFLOW_RUN_ID:-<missing>}\` |"
+-            echo "| Run attempt | \`A${WORKFLOW_RUN_ATTEMPT:-<missing>}\` |"
+-            echo "| governance-check job result | \`${GOVERNANCE_JOB_RESULT:-<missing>}\` |"
+-            echo "| governance logical result | \`${GOVERNANCE_RESULT:-<missing>}\` |"
+-            echo "| static-analysis job result | \`${STATIC_ANALYSIS_JOB_RESULT:-<missing>}\` |"
+-            echo "| static-analysis logical result | \`${STATIC_ANALYSIS_RESULT:-<missing>}\` |"
+-            echo "| unit-test job result | \`${UNIT_TEST_JOB_RESULT:-<missing>}\` |"
+-            echo "| unit-test logical result | \`${UNIT_TEST_RESULT:-<missing>}\` |"
+-            echo "| build-package job result | \`${BUILD_PACKAGE_JOB_RESULT:-<missing>}\` |"
+-            echo "| build-package logical result | \`${BUILD_PACKAGE_RESULT:-<missing>}\` |"
+-            echo "| Governance evidence Artifact | \`${GOVERNANCE_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
+-            echo "| Static-analysis evidence Artifact | \`${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
+-            echo "| Unit-test evidence Artifact | \`${UNIT_TEST_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
+-            echo "| Build-package evidence Artifact | \`${BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
+-            echo "| Build Artifact | \`${BUILD_ARTIFACT_NAME:-<missing>}\` |"
+-            echo "| Build Artifact ID | \`${BUILD_ARTIFACT_ID:-<missing>}\` |"
+-            echo "| Build Artifact version | \`${BUILD_ARTIFACT_VERSION:-<missing>}\` |"
+-            echo "| Build Artifact checksum | \`${BUILD_ARTIFACT_CHECKSUM:-<missing>}\` |"
+-            echo
+-            echo "## Gate failure reasons"
+-            echo
+-            if [ "${#reasons[@]}" -eq 0 ]; then
+-              echo "- なし"
+-            else
+-              printf -- "- %s\n" "${reasons[@]}"
+-            fi
+-          } >> "${GITHUB_STEP_SUMMARY}"
+-
+-          if [ "${gate_result}" != "success" ]; then
+-            printf 'ERROR: pr-ci-gate failed:\n' >&2
+-            printf ' - %s\n' "${reasons[@]}" >&2
+-            exit 1
+-          fi
++          python3 scripts/pr-ci/pr_ci_gate.py \
++            --github-step-summary "${GITHUB_STEP_SUMMARY}"
+diff --git a/ansible/deploy/roles/app/tasks/main.yml b/ansible/deploy/roles/app/tasks/main.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..a9d510cbe2719028b6aa794979bc82df676d298e
+--- /dev/null
++++ b/ansible/deploy/roles/app/tasks/main.yml
+@@ -0,0 +1,131 @@
++---
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++- name: Validate app artifact input
++  ansible.builtin.assert:
++    that:
++      - app_artifact_path is defined
++      - app_artifact_path | length > 0
++      - app_version is defined
++      - app_version | length > 0
++    fail_msg: "app_artifact_path and app_version are required for the course app deploy."
++
++- name: Create Go app runtime directories
++  ansible.builtin.file:
++    path: "{{ item.path }}"
++    state: directory
++    owner: root
++    group: root
++    mode: "{{ item.mode }}"
++  loop:
++    - { path: /opt/ms1-app/bin, mode: "0755" }
++    - { path: /run/ms1-app, mode: "0755" }
++    - { path: /var/log/ms1-app, mode: "0755" }
++
++- name: Copy build artifact to target container
++  ansible.builtin.copy:
++    src: "{{ app_artifact_path }}"
++    dest: /opt/ms1-app/bin/ms1-app
++    owner: root
++    group: root
++    mode: "0755"
++  register: app_binary
++
++- name: Install app launcher
++  ansible.builtin.template:
++    src: ms1-app-run.j2
++    dest: /usr/local/bin/ms1-app-run
++    owner: root
++    group: root
++    mode: "0755"
++  register: app_launcher
++
++- name: Check current Go app process
++  ansible.builtin.shell: |
++    set -eu
++    test -s /run/ms1-app/app.pid
++    kill -0 "$(cat /run/ms1-app/app.pid)"
++  args:
++    executable: /bin/bash
++  register: app_process
++  failed_when: false
++  changed_when: false
++
++- name: Stop Go app when deployed artifact changed
++  ansible.builtin.shell: |
++    set -eu
++    pid="$(cat /run/ms1-app/app.pid)"
++    kill "${pid}"
++    for _ in $(seq 1 20); do
++      if ! kill -0 "${pid}" 2>/dev/null; then
++        exit 0
++      fi
++      sleep 0.2
++    done
++    kill -9 "${pid}"
++  args:
++    executable: /bin/bash
++  when:
++    - app_process.rc == 0
++    - app_binary.changed or app_launcher.changed
++  changed_when: true
++
++- name: Check Go app process after optional stop
++  ansible.builtin.shell: |
++    set -eu
++    test -s /run/ms1-app/app.pid
++    kill -0 "$(cat /run/ms1-app/app.pid)"
++  args:
++    executable: /bin/bash
++  register: app_process_after_stop
++  failed_when: false
++  changed_when: false
++
++- name: Start Go app without systemd
++  ansible.builtin.shell: |
++    set -eu
++    nohup env APP_ADDR="127.0.0.1:{{ app_port | default(8080) }}" \
++      APP_VERSION="{{ app_version }}" \
++      /usr/local/bin/ms1-app-run >> /var/log/ms1-app/app.log 2>&1 &
++    echo "$!" > /run/ms1-app/app.pid
++  args:
++    executable: /bin/bash
++  when: app_process_after_stop.rc != 0
++  changed_when: true
++
++- name: Confirm Go app process is running
++  ansible.builtin.shell: |
++    set -eu
++    test -s /run/ms1-app/app.pid
++    kill -0 "$(cat /run/ms1-app/app.pid)"
++  args:
++    executable: /bin/bash
++  changed_when: false
++
++- name: Confirm Go app direct health endpoint
++  ansible.builtin.uri:
++    url: "http://127.0.0.1:{{ app_port | default(8080) }}/health"
++    method: GET
++    return_content: true
++    status_code: 200
++  register: app_direct_health
++  retries: 10
++  delay: 1
++  until:
++    - app_direct_health.status == 200
++    - app_direct_health.json.status == "ok"
++    - app_direct_health.json.service == "ms1-go-api"
++
++- name: Confirm Nginx proxied health endpoint
++  ansible.builtin.uri:
++    url: "http://127.0.0.1:{{ nginx_port | default(80) }}/health"
++    method: GET
++    return_content: true
++    status_code: 200
++  register: app_proxied_health
++  retries: 10
++  delay: 1
++  until:
++    - app_proxied_health.status == 200
++    - app_proxied_health.json.status == "ok"
++    - app_proxied_health.json.service == "ms1-go-api"
+diff --git a/ansible/deploy/roles/app/templates/ms1-app-run.j2 b/ansible/deploy/roles/app/templates/ms1-app-run.j2
+new file mode 100644
+index 0000000000000000000000000000000000000000..1cbc23487aa0a430ddd75216590f72d359103438
+--- /dev/null
++++ b/ansible/deploy/roles/app/templates/ms1-app-run.j2
+@@ -0,0 +1,5 @@
++#!/usr/bin/env sh
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++set -eu
++exec /opt/ms1-app/bin/ms1-app
+diff --git a/ansible/deploy/site.yml b/ansible/deploy/site.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..c4f8ddca67dfe0b6da376d04536815e0f4436991
+--- /dev/null
++++ b/ansible/deploy/site.yml
+@@ -0,0 +1,8 @@
++---
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++- name: Deploy the course Go application artifact
++  hosts: ms1_target
++  gather_facts: false
++  roles:
++    - role: app
+diff --git a/ansible/infra/roles/nginx/tasks/main.yml b/ansible/infra/roles/nginx/tasks/main.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..04ebbccde55bfd2285761f881db22ede5bea0ad4
+--- /dev/null
++++ b/ansible/infra/roles/nginx/tasks/main.yml
+@@ -0,0 +1,57 @@
++---
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++- name: Install Nginx package
++  ansible.builtin.apt:
++    name:
++      - nginx
++    state: present
++    update_cache: true
++
++- name: Remove default Nginx site
++  ansible.builtin.file:
++    path: /etc/nginx/sites-enabled/default
++    state: absent
++  register: nginx_default_site
++
++- name: Configure Nginx reverse proxy for Go app
++  ansible.builtin.template:
++    src: ms1-app.conf.j2
++    dest: /etc/nginx/sites-available/ms1-app.conf
++    owner: root
++    group: root
++    mode: "0644"
++  register: nginx_site_config
++
++- name: Enable Nginx reverse proxy site
++  ansible.builtin.file:
++    src: /etc/nginx/sites-available/ms1-app.conf
++    dest: /etc/nginx/sites-enabled/ms1-app.conf
++    state: link
++  register: nginx_site_link
++
++- name: Validate Nginx configuration
++  ansible.builtin.command: nginx -t
++  changed_when: false
++
++- name: Check whether Nginx is running
++  ansible.builtin.command: pgrep -x nginx
++  register: nginx_process
++  failed_when: false
++  changed_when: false
++
++- name: Reload Nginx without systemd when configuration changed
++  ansible.builtin.command: nginx -s reload
++  when:
++    - nginx_process.rc == 0
++    - nginx_default_site.changed or nginx_site_config.changed or nginx_site_link.changed
++  changed_when: true
++
++- name: Start Nginx without systemd when not running
++  ansible.builtin.command: nginx
++  when: nginx_process.rc != 0
++  changed_when: true
++
++- name: Confirm Nginx process is running
++  ansible.builtin.command: pgrep -x nginx
++  changed_when: false
+diff --git a/ansible/infra/roles/nginx/templates/ms1-app.conf.j2 b/ansible/infra/roles/nginx/templates/ms1-app.conf.j2
+new file mode 100644
+index 0000000000000000000000000000000000000000..5e146297976745fb057a4450dc17b869d9baa2c5
+--- /dev/null
++++ b/ansible/infra/roles/nginx/templates/ms1-app.conf.j2
+@@ -0,0 +1,16 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++server {
++    listen {{ nginx_port | default(80) }} default_server;
++    server_name _;
++
++    access_log /var/log/nginx/ms1-access.log;
++    error_log /var/log/nginx/ms1-error.log;
++
++    location /health {
++        proxy_pass http://127.0.0.1:{{ app_port | default(8080) }}/health;
++        proxy_http_version 1.1;
++        proxy_set_header Host $host;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    }
++}
+diff --git a/ansible/infra/site.yml b/ansible/infra/site.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..0d622da242e1c00073e4dc0406f67c21c8fcea4f
+--- /dev/null
++++ b/ansible/infra/site.yml
+@@ -0,0 +1,8 @@
++---
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++- name: Configure the course target infrastructure
++  hosts: ms1_target
++  gather_facts: false
++  roles:
++    - role: nginx
+diff --git a/images/target/Dockerfile b/images/target/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..aa5250e07909b436bed1958a804f2ce0fe6d6ef8
+--- /dev/null
++++ b/images/target/Dockerfile
+@@ -0,0 +1,25 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
++
++LABEL org.opencontainers.image.title="Course target container"
++LABEL org.opencontainers.image.description="Minimal Ubuntu 24.04 target for Terraform Docker Provider and Ansible Docker connection verification"
++LABEL org.opencontainers.image.base.name="ubuntu:24.04"
++LABEL org.opencontainers.image.base.digest="sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90"
++
++ENV DEBIAN_FRONTEND=noninteractive
++
++RUN apt-get update \
++    && apt-get install -y --no-install-recommends \
++        bash \
++        ca-certificates \
++        curl \
++        iproute2 \
++        net-tools \
++        procps \
++        python3 \
++        python3-apt \
++        tar \
++    && rm -rf /var/lib/apt/lists/*
++
++CMD ["sleep", "infinity"]
+diff --git a/requirements/ms1.txt b/requirements/ms1.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..825c8e10aa8256e47230a43b1a38908bb75b9764
+--- /dev/null
++++ b/requirements/ms1.txt
+@@ -0,0 +1,8 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++ansible==13.8.0
++ansible-lint==26.4.0
++docker==7.1.0
++pytest==8.4.2
++pytest-testinfra==10.2.2
++requests==2.32.4
+diff --git a/scripts/pr-ci/environment_lifecycle.py b/scripts/pr-ci/environment_lifecycle.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8f88fb8a740835aac472c1e2acbf26e210375714
+--- /dev/null
++++ b/scripts/pr-ci/environment_lifecycle.py
+@@ -0,0 +1,950 @@
++#!/usr/bin/env python3
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++from __future__ import annotations
++
++import argparse
++import hashlib
++import json
++import re
++import stat
++import subprocess
++import sys
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import Any
++from urllib.request import urlopen
++
++from pr_ci_common import (
++    append_step_summary,
++    common_evidence_manifest,
++    relative_existing_files,
++    repo_root,
++    utc_timestamp,
++    write_github_output,
++    write_json,
++)
++
++
++EXPECTED_EVIDENCE = [
++    "manifest.json",
++    "environment-lifecycle-result.json",
++    "summary.md",
++    "logs/terraform-plan.log",
++    "logs/terraform-apply.log",
++    "logs/terraform-destroy.log",
++    "logs/ansible.log",
++    "logs/startup-connectivity-check.log",
++    "logs/cleanup.log",
++    "logs/residue-verification.log",
++    "logs/docker-state-before-cleanup.txt",
++    "logs/docker-state-after-cleanup.txt",
++    "logs/nginx.log",
++    "logs/go-app.log",
++]
++
++MANAGED_BY = "github-actions-pr-ci"
++ENVIRONMENT_PATTERN_ID = "UT"
++APP_BINARY_PATH = "/opt/ms1-app/bin/ms1-app"
++APP_PID_PATH = "/run/ms1-app/app.pid"
++APP_PORT = 8080
++NGINX_PORT = 80
++
++
++@dataclass
++class CommandResult:
++    command: list[str]
++    returncode: int
++    stdout: str
++
++
++@dataclass
++class LifecycleState:
++    failure_reasons: list[str] = field(default_factory=list)
++    warnings: list[str] = field(default_factory=list)
++    prerequisites_met: bool = False
++    upstream_ready: bool = False
++    artifact_ready: bool = False
++    environment_face_id: str = ""
++    environment_creation_state: str = "NotStarted"
++    readiness_check_execution_state: str = "NotStarted"
++    readiness_check_result: str = "FailedBeforeCheck"
++    test_execution_state: str = "NotStarted"
++    overall_test_result: str = "FailedBeforeTest"
++    cleanup_state: str = "NotAttempted"
++    cleanup_warning: bool = False
++    cleanup_target_count: int = 0
++    remaining_resource_count: int = 0
++    cleanup_targets: list[str] = field(default_factory=list)
++    remaining_resource_identifiers: list[str] = field(default_factory=list)
++    cleanup_started_at: str = ""
++    cleanup_finished_at: str = ""
++    cleanup_attempted: bool = False
++    environment_resources_may_exist: bool = False
++    residue_verification_result: str = "NotStarted"
++    environment_lifecycle_result: str = "failure"
++
++
++def parse_args(argv: list[str]) -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description="Run the Lesson 5.4 disposable UT environment lifecycle.")
++    parser.add_argument("--output-dir", required=True)
++    parser.add_argument("--build-artifact-dir", required=True)
++    parser.add_argument("--repository", required=True)
++    parser.add_argument("--workflow-run-id", required=True)
++    parser.add_argument("--workflow-run-attempt", required=True)
++    parser.add_argument("--job-name", default="environment-lifecycle")
++    parser.add_argument("--test-run-id", required=True)
++    parser.add_argument("--issue-number", required=True)
++    parser.add_argument("--target-version", required=True)
++    parser.add_argument("--required-final-stage", required=True)
++    parser.add_argument("--pr-number", required=True)
++    parser.add_argument("--pr-head-sha", required=True)
++    parser.add_argument("--governance-job-result", required=True)
++    parser.add_argument("--governance-result", required=True)
++    parser.add_argument("--static-analysis-job-result", required=True)
++    parser.add_argument("--static-analysis-result", required=True)
++    parser.add_argument("--unit-test-job-result", required=True)
++    parser.add_argument("--unit-test-result", required=True)
++    parser.add_argument("--build-package-job-result", required=True)
++    parser.add_argument("--build-package-result", required=True)
++    parser.add_argument("--build-artifact-name", required=True)
++    parser.add_argument("--build-artifact-id", required=True)
++    parser.add_argument("--build-artifact-version", required=True)
++    parser.add_argument("--build-artifact-checksum", required=True)
++    parser.add_argument("--build-artifact-uploaded", required=True)
++    parser.add_argument("--host-http-port", default="18080")
++    parser.add_argument("--github-output")
++    parser.add_argument("--github-step-summary")
++    parser.add_argument("--created-at")
++    return parser.parse_args(argv)
++
++
++def normalize_bool(value: str) -> bool:
++    return value.strip().lower() == "true"
++
++
++def sanitize_docker_name(value: str) -> str:
++    sanitized = re.sub(r"[^a-z0-9_.-]+", "-", value.lower())
++    sanitized = sanitized.strip(".-")
++    return sanitized or "ut-environment"
++
++
++def environment_face_id(issue_number: str, workflow_run_id: str, run_attempt: str) -> str:
++    return f"UT-{issue_number}-{workflow_run_id}-A{run_attempt}"
++
++
++def derive_overall_test_result(state: LifecycleState) -> str:
++    if state.readiness_check_result == "Passed":
++        return "Passed"
++    if state.readiness_check_result == "FailedBeforeCheck":
++        return "FailedBeforeTest"
++    return "Failed"
++
++
++def sha256_file(path: Path) -> str:
++    digest = hashlib.sha256()
++    with path.open("rb") as binary_file:
++        for chunk in iter(lambda: binary_file.read(1024 * 1024), b""):
++            digest.update(chunk)
++    return digest.hexdigest()
++
++
++def append_log(path: Path, message: str) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with path.open("a", encoding="utf-8") as log_file:
++        log_file.write(message)
++        if not message.endswith("\n"):
++            log_file.write("\n")
++
++
++def write_log(path: Path, message: str) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(message if message.endswith("\n") else message + "\n", encoding="utf-8")
++
++
++def run_command(
++    args: list[str],
++    *,
++    cwd: Path,
++    log_path: Path,
++    append: bool = False,
++    check: bool = False,
++) -> CommandResult:
++    log_path.parent.mkdir(parents=True, exist_ok=True)
++    try:
++        completed = subprocess.run(
++            args,
++            cwd=cwd,
++            text=True,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++            check=False,
++        )
++        result = CommandResult(args, completed.returncode, completed.stdout or "")
++    except OSError as exc:
++        result = CommandResult(args, 127, f"ERROR: failed to execute {args[0]}: {exc}\n")
++
++    serialized = f"$ {' '.join(args)}\n{result.stdout}"
++    if append:
++        append_log(log_path, serialized)
++    else:
++        write_log(log_path, serialized)
++
++    if check and result.returncode != 0:
++        raise RuntimeError(f"{args[0]} exited with rc={result.returncode}")
++    return result
++
++
++def docker_available(root: Path, log_path: Path) -> bool:
++    result = run_command(["docker", "version"], cwd=root, log_path=log_path, append=True)
++    return result.returncode == 0
++
++
++def docker_ids(label_filter: str, resource_type: str, root: Path, log_path: Path) -> list[str]:
++    if resource_type == "container":
++        args = ["docker", "ps", "-aq", "--filter", label_filter]
++    elif resource_type == "network":
++        args = ["docker", "network", "ls", "-q", "--filter", label_filter]
++    else:
++        raise ValueError(resource_type)
++    result = run_command(args, cwd=root, log_path=log_path, append=True)
++    if result.returncode != 0:
++        return []
++    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
++
++
++def docker_names(label_filter: str, root: Path, log_path: Path) -> list[str]:
++    result = run_command(
++        ["docker", "ps", "-a", "--filter", label_filter, "--format", "{{.Names}}"],
++        cwd=root,
++        log_path=log_path,
++        append=True,
++    )
++    names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
++    result = run_command(
++        ["docker", "network", "ls", "--filter", label_filter, "--format", "{{.Name}}"],
++        cwd=root,
++        log_path=log_path,
++        append=True,
++    )
++    names.extend(line.strip() for line in result.stdout.splitlines() if line.strip())
++    return names
++
++
++def evaluate_prerequisites(args: argparse.Namespace, state: LifecycleState) -> None:
++    upstream_checks = [
++        ("governance-check job", args.governance_job_result),
++        ("governance_result", args.governance_result),
++        ("static-analysis job", args.static_analysis_job_result),
++        ("static_analysis_result", args.static_analysis_result),
++        ("unit-test job", args.unit_test_job_result),
++        ("unit_test_result", args.unit_test_result),
++        ("build-package job", args.build_package_job_result),
++        ("build_package_result", args.build_package_result),
++    ]
++    for label, value in upstream_checks:
++        if value != "success":
++            state.failure_reasons.append(f"{label} is {value or '<missing>'}")
++
++    if args.issue_number in ("", "UNLINKED"):
++        state.failure_reasons.append("Issue number is not linked; environment face ID will not be generated")
++
++    required_build_values = {
++        "build_artifact_name": args.build_artifact_name,
++        "build_artifact_id": args.build_artifact_id,
++        "build_artifact_version": args.build_artifact_version,
++        "build_artifact_checksum": args.build_artifact_checksum,
++    }
++    for label, value in required_build_values.items():
++        if not value:
++            state.failure_reasons.append(f"{label} is missing")
++
++    if not normalize_bool(args.build_artifact_uploaded):
++        state.failure_reasons.append("Build Artifact upload did not succeed")
++
++    state.upstream_ready = not state.failure_reasons
++    if not state.upstream_ready:
++        return
++
++    build_artifact_dir = Path(args.build_artifact_dir)
++    binary_path = build_artifact_dir / "go-app-linux-amd64"
++    manifest_path = build_artifact_dir / "manifest.json"
++    checksum_path = build_artifact_dir / "go-app-linux-amd64.sha256"
++
++    if not binary_path.exists():
++        state.failure_reasons.append("Downloaded Build Artifact does not contain go-app-linux-amd64")
++    if not manifest_path.exists():
++        state.failure_reasons.append("Downloaded Build Artifact does not contain manifest.json")
++    if not checksum_path.exists():
++        state.failure_reasons.append("Downloaded Build Artifact does not contain go-app-linux-amd64.sha256")
++
++    if binary_path.exists():
++        actual_checksum = sha256_file(binary_path)
++        if actual_checksum != args.build_artifact_checksum:
++            state.failure_reasons.append(
++                "Downloaded Build Artifact checksum mismatch. "
++                f"expected={args.build_artifact_checksum} actual={actual_checksum}"
++            )
++        try:
++            binary_path.chmod(
++                binary_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
++            )
++        except OSError as exc:
++            state.failure_reasons.append(f"Failed to set execute bit on downloaded binary: {exc}")
++
++    if manifest_path.exists():
++        try:
++            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
++        except json.JSONDecodeError as exc:
++            state.failure_reasons.append(f"Build Artifact manifest is invalid JSON: {exc}")
++        else:
++            version = str(manifest.get("build_artifact_version") or "")
++            if version != args.build_artifact_version:
++                state.failure_reasons.append(
++                    "Build Artifact manifest version mismatch. "
++                    f"expected={args.build_artifact_version} actual={version or '<missing>'}"
++                )
++
++    state.artifact_ready = not state.failure_reasons
++    state.prerequisites_met = state.artifact_ready
++
++
++def run_terraform_apply(
++    args: argparse.Namespace,
++    state: LifecycleState,
++    *,
++    root: Path,
++    output_dir: Path,
++    logs_dir: Path,
++    image_name: str,
++    label_filter: str,
++) -> dict[str, str]:
++    tf_dir = root / "terraform" / "environments" / "ut"
++    state.environment_creation_state = "InProgress"
++    fmt = run_command(["terraform", "fmt", "-check"], cwd=tf_dir, log_path=logs_dir / "terraform-plan.log", append=True)
++    if fmt.returncode != 0:
++        state.failure_reasons.append("terraform fmt -check failed")
++        state.environment_creation_state = "Failed"
++        return {}
++
++    init = run_command(["terraform", "init", "-input=false"], cwd=tf_dir, log_path=logs_dir / "terraform-plan.log", append=True)
++    if init.returncode != 0:
++        state.failure_reasons.append("terraform init failed")
++        state.environment_creation_state = "Failed"
++        return {}
++
++    validate = run_command(["terraform", "validate"], cwd=tf_dir, log_path=logs_dir / "terraform-plan.log", append=True)
++    if validate.returncode != 0:
++        state.failure_reasons.append("terraform validate failed")
++        state.environment_creation_state = "Failed"
++        return {}
++
++    vars_args = [
++        "-var",
++        f"environment_face_id={state.environment_face_id}",
++        "-var",
++        f"target_image_name={image_name}",
++        "-var",
++        f"host_http_port={args.host_http_port}",
++        "-var",
++        f"test_run_id={args.test_run_id}",
++        "-var",
++        f"issue_number={args.issue_number}",
++        "-var",
++        f"workflow_run_id={args.workflow_run_id}",
++        "-var",
++        f"workflow_run_attempt={args.workflow_run_attempt}",
++        "-var",
++        f"repository={args.repository}",
++    ]
++    plan = run_command(
++        ["terraform", "plan", "-input=false", "-out=tfplan", *vars_args],
++        cwd=tf_dir,
++        log_path=logs_dir / "terraform-plan.log",
++        append=True,
++    )
++    if plan.returncode != 0:
++        state.failure_reasons.append("terraform plan failed")
++        state.environment_creation_state = "Failed"
++        return {}
++
++    state.environment_resources_may_exist = True
++    apply = run_command(
++        ["terraform", "apply", "-auto-approve", "-input=false", "tfplan"],
++        cwd=tf_dir,
++        log_path=logs_dir / "terraform-apply.log",
++    )
++    if apply.returncode != 0:
++        state.failure_reasons.append("terraform apply failed")
++        state.environment_creation_state = "Failed"
++        return {}
++
++    outputs: dict[str, str] = {}
++    for name in ("ansible_inventory", "container_name", "network_name", "host_http_url"):
++        result = run_command(["terraform", "output", "-raw", name], cwd=tf_dir, log_path=logs_dir / "terraform-apply.log", append=True)
++        if result.returncode != 0:
++            state.failure_reasons.append(f"terraform output {name} failed")
++            continue
++        outputs[name] = result.stdout.strip()
++
++    if "ansible_inventory" in outputs:
++        (output_dir / "inventory.yml").write_text(outputs["ansible_inventory"], encoding="utf-8")
++    if "container_name" in outputs:
++        (output_dir / "container_name.txt").write_text(outputs["container_name"], encoding="utf-8")
++    if "host_http_url" in outputs:
++        (output_dir / "host_http_url.txt").write_text(outputs["host_http_url"], encoding="utf-8")
++    (output_dir / "managed_label_filter.txt").write_text(label_filter, encoding="utf-8")
++    return outputs
++
++
++def run_ansible_and_checks(
++    args: argparse.Namespace,
++    state: LifecycleState,
++    *,
++    root: Path,
++    output_dir: Path,
++    logs_dir: Path,
++    outputs: dict[str, str],
++) -> None:
++    inventory = output_dir / "inventory.yml"
++    if not inventory.exists():
++        state.failure_reasons.append("Ansible inventory was not created")
++        state.environment_creation_state = "Failed"
++        state.readiness_check_execution_state = "Skipped"
++        state.readiness_check_result = "FailedBeforeCheck"
++        state.test_execution_state = "Failed"
++        state.overall_test_result = derive_overall_test_result(state)
++        return
++
++    ansible_log = logs_dir / "ansible.log"
++    infra = run_command(
++        ["ansible-playbook", "-i", str(inventory), "ansible/infra/site.yml"],
++        cwd=root,
++        log_path=ansible_log,
++        append=True,
++    )
++    if infra.returncode != 0:
++        state.failure_reasons.append("Ansible infra configuration failed")
++        state.environment_creation_state = "Failed"
++        state.readiness_check_execution_state = "Skipped"
++        state.readiness_check_result = "FailedBeforeCheck"
++        state.test_execution_state = "Failed"
++        state.overall_test_result = derive_overall_test_result(state)
++        return
++
++    binary_path = Path(args.build_artifact_dir) / "go-app-linux-amd64"
++    deploy = run_command(
++        [
++            "ansible-playbook",
++            "-i",
++            str(inventory),
++            "ansible/deploy/site.yml",
++            "-e",
++            f"app_artifact_path={binary_path}",
++            "-e",
++            f"app_version={args.build_artifact_version}",
++        ],
++        cwd=root,
++        log_path=ansible_log,
++        append=True,
++    )
++    if deploy.returncode != 0:
++        state.failure_reasons.append("Ansible app deploy failed")
++        state.environment_creation_state = "Failed"
++        state.readiness_check_execution_state = "Skipped"
++        state.readiness_check_result = "FailedBeforeCheck"
++        state.test_execution_state = "Failed"
++        state.overall_test_result = derive_overall_test_result(state)
++        return
++
++    state.environment_creation_state = "Completed"
++    state.readiness_check_execution_state = "InProgress"
++
++    container_name = outputs.get("container_name", "")
++    if not container_name:
++        state.failure_reasons.append("container_name output is missing")
++        state.readiness_check_execution_state = "Failed"
++        state.readiness_check_result = "Failed"
++        state.test_execution_state = "Failed"
++        state.overall_test_result = derive_overall_test_result(state)
++        return
++
++    check_log = logs_dir / "startup-connectivity-check.log"
++    checks = [
++        (
++            "binary exists and is executable",
++            ["docker", "exec", container_name, "sh", "-lc", f"test -x {APP_BINARY_PATH}"],
++        ),
++        (
++            "pid file references a live process",
++            ["docker", "exec", container_name, "sh", "-lc", f"test -s {APP_PID_PATH} && kill -0 $(cat {APP_PID_PATH})"],
++        ),
++        (
++            "app port is listening",
++            ["docker", "exec", container_name, "sh", "-lc", f"ss -ltn | grep -E ':{APP_PORT}[[:space:]]'"],
++        ),
++        (
++            "direct health returns expected version",
++            [
++                "docker",
++                "exec",
++                container_name,
++                "python3",
++                "-c",
++                (
++                    "import json,sys,urllib.request;"
++                    f"data=json.load(urllib.request.urlopen('http://127.0.0.1:{APP_PORT}/health', timeout=5));"
++                    f"assert data.get('status')=='ok', data;"
++                    f"assert data.get('version')=='{args.build_artifact_version}', data"
++                ),
++            ],
++        ),
++        (
++            "nginx proxied health returns expected version",
++            [
++                "docker",
++                "exec",
++                container_name,
++                "python3",
++                "-c",
++                (
++                    "import json,sys,urllib.request;"
++                    f"data=json.load(urllib.request.urlopen('http://127.0.0.1:{NGINX_PORT}/health', timeout=5));"
++                    f"assert data.get('status')=='ok', data;"
++                    f"assert data.get('version')=='{args.build_artifact_version}', data"
++                ),
++            ],
++        ),
++    ]
++
++    failed = False
++    for label, command in checks:
++        append_log(check_log, f"## {label}")
++        result = run_command(command, cwd=root, log_path=check_log, append=True)
++        if result.returncode != 0:
++            state.failure_reasons.append(f"startup/connectivity check failed: {label}")
++            failed = True
++
++    host_url = outputs.get("host_http_url", "")
++    if host_url:
++        try:
++            with urlopen(f"{host_url}/health", timeout=5) as response:
++                data = json.loads(response.read().decode("utf-8"))
++            append_log(check_log, f"host nginx health response: {data}")
++            if response.status != 200 or data.get("version") != args.build_artifact_version:
++                state.failure_reasons.append("host nginx health response did not match expected version")
++                failed = True
++        except Exception as exc:  # noqa: BLE001 - evidence capture should keep running.
++            append_log(check_log, f"ERROR: host nginx health request failed: {exc}")
++            state.failure_reasons.append("host nginx health request failed")
++            failed = True
++
++    state.readiness_check_execution_state = "Failed" if failed else "Completed"
++    state.readiness_check_result = "Failed" if failed else "Passed"
++    state.test_execution_state = state.readiness_check_execution_state
++    state.overall_test_result = derive_overall_test_result(state)
++
++
++def collect_logs(root: Path, logs_dir: Path, container_name: str) -> None:
++    docker_state_before = logs_dir / "docker-state-before-cleanup.txt"
++    run_command(["docker", "ps", "-a"], cwd=root, log_path=docker_state_before, append=True)
++    run_command(["docker", "network", "ls"], cwd=root, log_path=docker_state_before, append=True)
++    if not container_name:
++        write_log(logs_dir / "nginx.log", "No container name is available; Nginx logs were not collected.")
++        write_log(logs_dir / "go-app.log", "No container name is available; Go app logs were not collected.")
++        return
++    run_command(["docker", "inspect", container_name], cwd=root, log_path=docker_state_before, append=True)
++    run_command(["docker", "exec", container_name, "sh", "-lc", "ps auxww"], cwd=root, log_path=docker_state_before, append=True)
++    run_command(["docker", "exec", container_name, "sh", "-lc", "ss -ltnp"], cwd=root, log_path=docker_state_before, append=True)
++    nginx = run_command(
++        ["docker", "exec", container_name, "sh", "-lc", "cat /var/log/nginx/*.log 2>/dev/null || true"],
++        cwd=root,
++        log_path=logs_dir / "nginx.log",
++    )
++    if not nginx.stdout.strip():
++        append_log(logs_dir / "nginx.log", "No Nginx log content was available.")
++    app = run_command(
++        ["docker", "exec", container_name, "sh", "-lc", "cat /var/log/ms1-app/*.log 2>/dev/null || true"],
++        cwd=root,
++        log_path=logs_dir / "go-app.log",
++    )
++    if not app.stdout.strip():
++        append_log(logs_dir / "go-app.log", "No Go app log content was available.")
++
++
++def cleanup(
++    args: argparse.Namespace,
++    state: LifecycleState,
++    *,
++    root: Path,
++    logs_dir: Path,
++    label_filter: str,
++    image_name: str,
++) -> None:
++    cleanup_log = logs_dir / "cleanup.log"
++    state.cleanup_started_at = utc_timestamp()
++    append_log(cleanup_log, f"cleanup started at {state.cleanup_started_at}")
++
++    destroy_log = logs_dir / "terraform-destroy.log"
++    if not state.prerequisites_met or not state.environment_resources_may_exist:
++        state.cleanup_attempted = True
++        state.cleanup_targets = []
++        state.cleanup_target_count = 0
++        state.cleanup_state = "Completed"
++        if state.prerequisites_met:
++            append_log(cleanup_log, "Terraform apply was not started; cleanup target count is 0.")
++            write_log(destroy_log, "Terraform destroy was not required because Terraform apply was not started.")
++        else:
++            append_log(cleanup_log, "Environment was not created; cleanup target count is 0.")
++            write_log(destroy_log, "Terraform destroy was not required because no environment was created.")
++    else:
++        if not docker_available(root, cleanup_log):
++            state.cleanup_state = "NotAttempted"
++            state.failure_reasons.append("docker is unavailable; cleanup could not be attempted")
++            state.cleanup_finished_at = utc_timestamp()
++            return
++        state.cleanup_attempted = True
++        state.cleanup_targets = docker_names(label_filter, root, cleanup_log)
++        state.cleanup_target_count = len(state.cleanup_targets)
++
++        tf_dir = root / "terraform" / "environments" / "ut"
++        destroy = run_command(
++            [
++                "terraform",
++                "destroy",
++                "-auto-approve",
++                "-input=false",
++                "-var",
++                f"environment_face_id={state.environment_face_id}",
++                "-var",
++                f"target_image_name={image_name}",
++                "-var",
++                f"host_http_port={args.host_http_port}",
++                "-var",
++                f"test_run_id={args.test_run_id}",
++                "-var",
++                f"issue_number={args.issue_number}",
++                "-var",
++                f"workflow_run_id={args.workflow_run_id}",
++                "-var",
++                f"workflow_run_attempt={args.workflow_run_attempt}",
++                "-var",
++                f"repository={args.repository}",
++            ],
++            cwd=tf_dir,
++            log_path=destroy_log,
++        )
++        if destroy.returncode != 0:
++            state.warnings.append("terraform destroy failed; Docker label cleanup fallback was attempted")
++
++        containers = docker_ids(label_filter, "container", root, cleanup_log)
++        if containers:
++            run_command(["docker", "rm", "-f", *containers], cwd=root, log_path=cleanup_log, append=True)
++        networks = docker_ids(label_filter, "network", root, cleanup_log)
++        if networks:
++            run_command(["docker", "network", "rm", *networks], cwd=root, log_path=cleanup_log, append=True)
++
++    state.cleanup_finished_at = utc_timestamp()
++    append_log(cleanup_log, f"cleanup finished at {state.cleanup_finished_at}")
++
++
++def verify_residue(
++    state: LifecycleState,
++    *,
++    root: Path,
++    logs_dir: Path,
++    label_filter: str,
++) -> None:
++    residue_log = logs_dir / "residue-verification.log"
++    docker_state_after = logs_dir / "docker-state-after-cleanup.txt"
++    if state.cleanup_state == "NotAttempted" and not state.cleanup_attempted:
++        state.residue_verification_result = "NotAttempted"
++        write_log(residue_log, "Cleanup was not attempted. Residue verification is not reliable.")
++        write_log(docker_state_after, "Cleanup was not attempted. Docker state after cleanup was not collected.")
++        return
++
++    if not state.prerequisites_met or not state.environment_resources_may_exist:
++        state.remaining_resource_count = 0
++        state.remaining_resource_identifiers = []
++        state.residue_verification_result = "Passed"
++        state.cleanup_warning = bool(state.warnings)
++        state.cleanup_state = "CompletedWithWarning" if state.cleanup_warning else "Completed"
++        if state.prerequisites_met:
++            write_log(residue_log, "Terraform apply was not started. Residue verification passed with remaining_resource_count=0.")
++            write_log(docker_state_after, "Terraform apply was not started. No Docker resources are expected.")
++        else:
++            write_log(residue_log, "No environment was created. Residue verification passed with remaining_resource_count=0.")
++            write_log(docker_state_after, "No environment was created. No Docker resources are expected.")
++        return
++
++    run_command(["docker", "ps", "-a"], cwd=root, log_path=docker_state_after, append=True)
++    run_command(["docker", "network", "ls"], cwd=root, log_path=docker_state_after, append=True)
++    remaining = docker_names(label_filter, root, residue_log)
++    state.remaining_resource_identifiers = remaining
++    state.remaining_resource_count = len(remaining)
++    if remaining:
++        state.residue_verification_result = "Failed"
++        state.warnings.append("managed Docker resources remain after cleanup")
++    else:
++        state.residue_verification_result = "Passed"
++
++    state.cleanup_warning = bool(state.warnings)
++    state.cleanup_state = "CompletedWithWarning" if state.cleanup_warning else "Completed"
++    append_log(residue_log, f"remaining_resource_count={state.remaining_resource_count}")
++    for identifier in remaining:
++        append_log(residue_log, f"remaining={identifier}")
++
++
++def ensure_placeholder_logs(logs_dir: Path) -> None:
++    for relative_path in EXPECTED_EVIDENCE:
++        if not relative_path.startswith("logs/"):
++            continue
++        path = logs_dir.parent / relative_path
++        if not path.exists():
++            write_log(path, f"{relative_path} was not produced before finalization.")
++
++
++def build_summary(manifest: dict[str, Any], result_payload: dict[str, Any]) -> str:
++    reasons = result_payload["failure_reasons"] or ["なし"]
++    warnings = result_payload["warnings"] or ["なし"]
++    reason_lines = "\n".join(f"- {reason}" for reason in reasons)
++    warning_lines = "\n".join(f"- {warning}" for warning in warnings)
++    return "\n".join(
++        [
++            "# environment-lifecycle Summary",
++            "",
++            "| Item | Value |",
++            "|---|---|",
++            f"| Result | `{result_payload['environment_lifecycle_result']}` |",
++            f"| Test run ID | `{manifest['test_run_id']}` |",
++            f"| Pull Request | `#{manifest['pull_request_number']}` |",
++            f"| Head SHA | `{manifest['pr_head_sha']}` |",
++            f"| Issue | `{manifest['issue_number_or_UNLINKED']}` |",
++            f"| Environment face ID | `{manifest['environment_face_id_or_not_created']}` |",
++            f"| Environment creation state | `{manifest['environment_creation_state']}` |",
++            f"| Readiness check | `{manifest['readiness_check_execution_state']} / {manifest['readiness_check_result']}` |",
++            f"| Overall test result | `{manifest['overall_test_result']}` |",
++            f"| Cleanup state | `{manifest['cleanup_state']}` |",
++            f"| Remaining resource count | `{manifest['remaining_resource_count']}` |",
++            f"| Environment lifecycle result | `{result_payload['environment_lifecycle_result']}` |",
++            f"| Test execution state (compatibility) | `{manifest['test_execution_state']}` |",
++            f"| Cleanup target count | `{manifest['cleanup_target_count']}` |",
++            f"| Cleanup warning | `{str(manifest['cleanup_warning']).lower()}` |",
++            f"| Evidence Artifact | `{manifest['artifact_name']}` |",
++            "",
++            "## Failure reasons",
++            "",
++            reason_lines,
++            "",
++            "## Cleanup warnings",
++            "",
++            warning_lines,
++            "",
++        ]
++    )
++
++
++def finalize_result(args: argparse.Namespace, state: LifecycleState, output_dir: Path) -> tuple[dict[str, Any], dict[str, Any], str]:
++    artifact_name = f"evidence-environment_{args.test_run_id}"
++    if not args.test_run_id:
++        artifact_name = f"evidence-environment_missing-{args.workflow_run_id}-A{args.workflow_run_attempt}"
++
++    if state.cleanup_state == "NotAttempted":
++        state.environment_lifecycle_result = "failure"
++    elif not state.upstream_ready:
++        state.environment_lifecycle_result = "skipped_prerequisites"
++    elif state.overall_test_result == "Passed":
++        state.environment_lifecycle_result = "success"
++    else:
++        state.environment_lifecycle_result = "failure"
++
++    collected = relative_existing_files(output_dir, EXPECTED_EVIDENCE)
++    for generated_file in ("manifest.json", "environment-lifecycle-result.json", "summary.md"):
++        if generated_file not in collected:
++            collected.append(generated_file)
++
++    manifest = common_evidence_manifest(
++        test_run_id=args.test_run_id,
++        workflow_run_id=args.workflow_run_id,
++        workflow_run_attempt=args.workflow_run_attempt,
++        job_name=args.job_name,
++        pr_number=args.pr_number,
++        issue_number=args.issue_number,
++        pr_head_sha=args.pr_head_sha,
++        repository=args.repository,
++        artifact_name=artifact_name,
++        generated_timestamp=utc_timestamp(args.created_at),
++        expected_evidence=EXPECTED_EVIDENCE,
++        collected_evidence=collected,
++        result=state.environment_lifecycle_result,
++        target_version=args.target_version,
++        required_final_stage=args.required_final_stage,
++    )
++    manifest.update(
++        {
++            "environment_face_id_or_not_created": state.environment_face_id or "NOT_CREATED",
++            "environment_creation_state": state.environment_creation_state,
++            "readiness_check_execution_state": state.readiness_check_execution_state,
++            "readiness_check_result": state.readiness_check_result,
++            "test_execution_state": state.test_execution_state,
++            "overall_test_result": state.overall_test_result,
++            "test_result": state.overall_test_result,
++            "test_result_alias_of": "overall_test_result",
++            "cleanup_state": state.cleanup_state,
++            "cleanup_target_count": state.cleanup_target_count,
++            "remaining_resource_count": state.remaining_resource_count,
++            "cleanup_warning": state.cleanup_warning,
++            "cleanup_targets": state.cleanup_targets,
++            "cleanup_started_at": state.cleanup_started_at,
++            "cleanup_finished_at": state.cleanup_finished_at,
++            "residue_verification_result": state.residue_verification_result,
++            "remaining_resource_identifiers": state.remaining_resource_identifiers,
++        }
++    )
++
++    result_payload = {
++        "environment_lifecycle_result": state.environment_lifecycle_result,
++        "prerequisites_met": state.prerequisites_met,
++        "upstream_ready": state.upstream_ready,
++        "artifact_ready": state.artifact_ready,
++        "failure_reasons": state.failure_reasons,
++        "warnings": state.warnings,
++        "build_artifact": {
++            "name": args.build_artifact_name,
++            "id": args.build_artifact_id,
++            "version": args.build_artifact_version,
++            "checksum": args.build_artifact_checksum,
++        },
++        "environment": {
++            "environment_face_id": state.environment_face_id,
++            "environment_creation_state": state.environment_creation_state,
++            "readiness_check_execution_state": state.readiness_check_execution_state,
++            "readiness_check_result": state.readiness_check_result,
++            "test_execution_state": state.test_execution_state,
++            "overall_test_result": state.overall_test_result,
++            "test_result": state.overall_test_result,
++            "test_result_alias_of": "overall_test_result",
++        },
++        "cleanup": {
++            "cleanup_state": state.cleanup_state,
++            "cleanup_warning": state.cleanup_warning,
++            "cleanup_target_count": state.cleanup_target_count,
++            "remaining_resource_count": state.remaining_resource_count,
++            "residue_verification_result": state.residue_verification_result,
++            "cleanup_attempted": state.cleanup_attempted,
++            "environment_resources_may_exist": state.environment_resources_may_exist,
++        },
++    }
++    summary = build_summary(manifest, result_payload)
++    return manifest, result_payload, summary
++
++
++def main(argv: list[str]) -> int:
++    args = parse_args(argv)
++    root = repo_root()
++    output_dir = Path(args.output_dir)
++    logs_dir = output_dir / "logs"
++    output_dir.mkdir(parents=True, exist_ok=True)
++    logs_dir.mkdir(parents=True, exist_ok=True)
++
++    if not args.test_run_id:
++        args.test_run_id = f"TR-UT-UNLINKED-{args.workflow_run_id}-A{args.workflow_run_attempt}"
++
++    state = LifecycleState()
++    evaluate_prerequisites(args, state)
++
++    if state.prerequisites_met:
++        state.environment_face_id = environment_face_id(
++            args.issue_number,
++            args.workflow_run_id,
++            args.workflow_run_attempt,
++        )
++
++    label_filter = f"label=test_run_id={args.test_run_id}"
++    image_name = f"{sanitize_docker_name(state.environment_face_id or args.test_run_id)}-target:local"
++    outputs: dict[str, str] = {}
++
++    try:
++        if state.prerequisites_met:
++            build_image = run_command(
++                ["docker", "build", "-t", image_name, "images/target"],
++                cwd=root,
++                log_path=logs_dir / "terraform-apply.log",
++                append=True,
++            )
++            if build_image.returncode != 0:
++                state.failure_reasons.append("target image build failed")
++                state.environment_creation_state = "Failed"
++                state.readiness_check_execution_state = "Skipped"
++                state.readiness_check_result = "FailedBeforeCheck"
++                state.overall_test_result = derive_overall_test_result(state)
++            else:
++                outputs = run_terraform_apply(
++                    args,
++                    state,
++                    root=root,
++                    output_dir=output_dir,
++                    logs_dir=logs_dir,
++                    image_name=image_name,
++                    label_filter=label_filter,
++                )
++
++            if state.environment_creation_state == "InProgress":
++                run_ansible_and_checks(
++                    args,
++                    state,
++                    root=root,
++                    output_dir=output_dir,
++                    logs_dir=logs_dir,
++                    outputs=outputs,
++                )
++        else:
++            write_log(logs_dir / "terraform-plan.log", "Upstream prerequisites were not met; Terraform plan was skipped.")
++            write_log(logs_dir / "terraform-apply.log", "Upstream prerequisites were not met; Terraform apply was skipped.")
++            write_log(logs_dir / "ansible.log", "Upstream prerequisites were not met; Ansible was skipped.")
++            write_log(logs_dir / "startup-connectivity-check.log", "Upstream prerequisites were not met; startup checks were skipped.")
++    finally:
++        collect_logs(root, logs_dir, outputs.get("container_name", "") if outputs else "")
++        cleanup(args, state, root=root, logs_dir=logs_dir, label_filter=label_filter, image_name=image_name)
++        verify_residue(state, root=root, logs_dir=logs_dir, label_filter=label_filter)
++        ensure_placeholder_logs(logs_dir)
++
++    if state.readiness_check_execution_state == "NotStarted":
++        state.readiness_check_execution_state = "Skipped"
++        state.readiness_check_result = "FailedBeforeCheck"
++    state.overall_test_result = derive_overall_test_result(state)
++
++    manifest, result_payload, summary = finalize_result(args, state, output_dir)
++    write_json(output_dir / "manifest.json", manifest)
++    write_json(output_dir / "environment-lifecycle-result.json", result_payload)
++    (output_dir / "summary.md").write_text(summary, encoding="utf-8")
++
++    write_github_output(
++        args.github_output,
++        {
++            "environment_lifecycle_result": state.environment_lifecycle_result,
++            "environment_evidence_manifest_finalized": True,
++            "evidence_artifact_name": manifest["artifact_name"],
++            "environment_face_id": state.environment_face_id,
++            "environment_creation_state": state.environment_creation_state,
++            "readiness_check_execution_state": state.readiness_check_execution_state,
++            "readiness_check_result": state.readiness_check_result,
++            "test_execution_state": state.test_execution_state,
++            "overall_test_result": state.overall_test_result,
++            "test_result": state.overall_test_result,
++            "test_result_alias_of": "overall_test_result",
++            "cleanup_state": state.cleanup_state,
++            "cleanup_warning": state.cleanup_warning,
++            "cleanup_target_count": state.cleanup_target_count,
++            "remaining_resource_count": state.remaining_resource_count,
++            "residue_verification_result": state.residue_verification_result,
++            "failure_reason_count": len(state.failure_reasons),
++        },
++    )
++    append_step_summary(args.github_step_summary, summary)
++    print(summary)
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv[1:]))
+diff --git a/scripts/pr-ci/pr_ci_gate.py b/scripts/pr-ci/pr_ci_gate.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..9bade749f1ef49b9e3942a086dd1fcf5fe408a0d
+--- /dev/null
++++ b/scripts/pr-ci/pr_ci_gate.py
+@@ -0,0 +1,240 @@
++#!/usr/bin/env python3
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++from __future__ import annotations
++
++import argparse
++import os
++import sys
++from typing import Any
++
++from pr_ci_common import append_step_summary
++
++
++def env_value(name: str, env: dict[str, str]) -> str:
++    return env.get(name, "").strip()
++
++
++def is_true(value: str) -> bool:
++    return value.strip().lower() == "true"
++
++
++def require_value(reasons: list[str], label: str, value: str) -> None:
++    if not value:
++        reasons.append(f"required value {label} is missing")
++
++
++def require_success_job(reasons: list[str], job_name: str, result: str) -> None:
++    if result != "success":
++        reasons.append(f"{job_name} job result is {result or '<missing>'}")
++
++
++def require_logical_success(reasons: list[str], label: str, result: str) -> None:
++    if result != "success":
++        reasons.append(f"{label} is {result or '<missing>'}")
++
++
++def require_uploaded_artifact(
++    reasons: list[str],
++    label: str,
++    uploaded: str,
++    name: str,
++    artifact_id: str,
++) -> None:
++    require_value(reasons, f"{label} Artifact name", name)
++    require_value(reasons, f"{label} Artifact ID", artifact_id)
++    if not is_true(uploaded):
++        reasons.append(f"{label} Artifact upload did not succeed")
++
++
++def evaluate_gate(env: dict[str, str]) -> dict[str, Any]:
++    reasons: list[str] = []
++
++    require_success_job(reasons, "governance-check", env_value("GOVERNANCE_JOB_RESULT", env))
++    require_success_job(reasons, "static-analysis", env_value("STATIC_ANALYSIS_JOB_RESULT", env))
++    require_success_job(reasons, "unit-test", env_value("UNIT_TEST_JOB_RESULT", env))
++    require_success_job(reasons, "build-package", env_value("BUILD_PACKAGE_JOB_RESULT", env))
++    require_success_job(reasons, "environment-lifecycle", env_value("ENVIRONMENT_LIFECYCLE_JOB_RESULT", env))
++
++    for required_name in (
++        "TEST_RUN_ID",
++        "ISSUE_NUMBER",
++        "TARGET_VERSION",
++        "REQUIRED_FINAL_STAGE",
++    ):
++        require_value(reasons, required_name, env_value(required_name, env))
++
++    require_logical_success(reasons, "governance_result", env_value("GOVERNANCE_RESULT", env))
++    require_logical_success(reasons, "static_analysis_result", env_value("STATIC_ANALYSIS_RESULT", env))
++    require_logical_success(reasons, "unit_test_result", env_value("UNIT_TEST_RESULT", env))
++    require_logical_success(reasons, "build_package_result", env_value("BUILD_PACKAGE_RESULT", env))
++
++    require_uploaded_artifact(
++        reasons,
++        "governance evidence",
++        env_value("GOVERNANCE_EVIDENCE_ARTIFACT_UPLOADED", env),
++        env_value("GOVERNANCE_EVIDENCE_ARTIFACT_NAME", env),
++        env_value("GOVERNANCE_EVIDENCE_ARTIFACT_ID", env),
++    )
++    require_uploaded_artifact(
++        reasons,
++        "static-analysis evidence",
++        env_value("STATIC_ANALYSIS_EVIDENCE_ARTIFACT_UPLOADED", env),
++        env_value("STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME", env),
++        env_value("STATIC_ANALYSIS_EVIDENCE_ARTIFACT_ID", env),
++    )
++    require_uploaded_artifact(
++        reasons,
++        "unit-test evidence",
++        env_value("UNIT_TEST_EVIDENCE_ARTIFACT_UPLOADED", env),
++        env_value("UNIT_TEST_EVIDENCE_ARTIFACT_NAME", env),
++        env_value("UNIT_TEST_EVIDENCE_ARTIFACT_ID", env),
++    )
++    require_uploaded_artifact(
++        reasons,
++        "build-package evidence",
++        env_value("BUILD_PACKAGE_EVIDENCE_ARTIFACT_UPLOADED", env),
++        env_value("BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME", env),
++        env_value("BUILD_PACKAGE_EVIDENCE_ARTIFACT_ID", env),
++    )
++    require_uploaded_artifact(
++        reasons,
++        "Build",
++        env_value("BUILD_ARTIFACT_UPLOADED", env),
++        env_value("BUILD_ARTIFACT_NAME", env),
++        env_value("BUILD_ARTIFACT_ID", env),
++    )
++    require_value(reasons, "Build Artifact version", env_value("BUILD_ARTIFACT_VERSION", env))
++    require_value(reasons, "Build Artifact checksum", env_value("BUILD_ARTIFACT_CHECKSUM", env))
++
++    environment_result = env_value("ENVIRONMENT_LIFECYCLE_RESULT", env)
++    if environment_result != "success":
++        reasons.append(f"environment_lifecycle_result is {environment_result or '<missing>'}")
++
++    if not is_true(env_value("ENVIRONMENT_EVIDENCE_MANIFEST_FINALIZED", env)):
++        reasons.append("environment evidence manifest was not finalized")
++    require_uploaded_artifact(
++        reasons,
++        "environment evidence",
++        env_value("ENVIRONMENT_EVIDENCE_ARTIFACT_UPLOADED", env),
++        env_value("ENVIRONMENT_EVIDENCE_ARTIFACT_NAME", env),
++        env_value("ENVIRONMENT_EVIDENCE_ARTIFACT_ID", env),
++    )
++
++    environment_creation_state = env_value("ENVIRONMENT_CREATION_STATE", env)
++    if environment_creation_state != "Completed":
++        reasons.append(
++            "environment_creation_state is "
++            f"{environment_creation_state or '<missing>'}"
++        )
++
++    readiness_execution_state = env_value("READINESS_CHECK_EXECUTION_STATE", env)
++    if readiness_execution_state != "Completed":
++        reasons.append(
++            "readiness_check_execution_state is "
++            f"{readiness_execution_state or '<missing>'}"
++        )
++
++    readiness_result = env_value("READINESS_CHECK_RESULT", env)
++    if readiness_result != "Passed":
++        reasons.append(
++            f"readiness_check_result is {readiness_result or '<missing>'}"
++        )
++
++    overall_test_result = env_value("OVERALL_TEST_RESULT", env)
++    if overall_test_result != "Passed":
++        reasons.append(
++            f"overall_test_result is {overall_test_result or '<missing>'}"
++        )
++
++    cleanup_state = env_value("CLEANUP_STATE", env)
++    if cleanup_state not in ("Completed", "CompletedWithWarning"):
++        reasons.append(f"cleanup_state is {cleanup_state or '<missing>'}")
++    if cleanup_state == "NotAttempted":
++        reasons.append("cleanup_state NotAttempted is not an acceptable cleanup warning")
++
++    gate_result = "success" if not reasons else "failure"
++    return {
++        "gate_result": gate_result,
++        "failure_reasons": reasons,
++    }
++
++
++def build_summary(env: dict[str, str], result: dict[str, Any]) -> str:
++    reasons = result["failure_reasons"] or ["なし"]
++    reason_lines = "\n".join(f"- {reason}" for reason in reasons)
++    rows = [
++        ("Gate result", result["gate_result"]),
++        ("Pull Request", f"#{env_value('PR_NUMBER', env) or '<missing>'}"),
++        ("Branch", env_value("PR_HEAD_REF", env) or "<missing>"),
++        ("Head SHA", env_value("PR_HEAD_SHA", env) or "<missing>"),
++        ("Test run ID", env_value("TEST_RUN_ID", env) or "<missing>"),
++        ("Issue", env_value("ISSUE_NUMBER", env) or "<missing>"),
++        ("target_version", env_value("TARGET_VERSION", env) or "<missing>"),
++        ("required_final_stage", env_value("REQUIRED_FINAL_STAGE", env) or "<missing>"),
++        ("Workflow run ID", env_value("WORKFLOW_RUN_ID", env) or "<missing>"),
++        ("Run attempt", f"A{env_value('WORKFLOW_RUN_ATTEMPT', env) or '<missing>'}"),
++        ("governance-check job result", env_value("GOVERNANCE_JOB_RESULT", env) or "<missing>"),
++        ("static-analysis job result", env_value("STATIC_ANALYSIS_JOB_RESULT", env) or "<missing>"),
++        ("unit-test job result", env_value("UNIT_TEST_JOB_RESULT", env) or "<missing>"),
++        ("build-package job result", env_value("BUILD_PACKAGE_JOB_RESULT", env) or "<missing>"),
++        ("environment-lifecycle job result", env_value("ENVIRONMENT_LIFECYCLE_JOB_RESULT", env) or "<missing>"),
++        ("Environment creation state", env_value("ENVIRONMENT_CREATION_STATE", env) or "<missing>"),
++        (
++            "Readiness check",
++            (
++                f"{env_value('READINESS_CHECK_EXECUTION_STATE', env) or '<missing>'} / "
++                f"{env_value('READINESS_CHECK_RESULT', env) or '<missing>'}"
++            ),
++        ),
++        ("Overall test result", env_value("OVERALL_TEST_RESULT", env) or "<missing>"),
++        ("Cleanup state", env_value("CLEANUP_STATE", env) or "<missing>"),
++        ("Cleanup warning", env_value("CLEANUP_WARNING", env) or "<missing>"),
++        ("Remaining resource count", env_value("REMAINING_RESOURCE_COUNT", env) or "<missing>"),
++        ("Environment lifecycle result", env_value("ENVIRONMENT_LIFECYCLE_RESULT", env) or "<missing>"),
++        ("Build Artifact", env_value("BUILD_ARTIFACT_NAME", env) or "<missing>"),
++        ("Build Artifact ID", env_value("BUILD_ARTIFACT_ID", env) or "<missing>"),
++        ("Build Artifact version", env_value("BUILD_ARTIFACT_VERSION", env) or "<missing>"),
++        ("Build Artifact checksum", env_value("BUILD_ARTIFACT_CHECKSUM", env) or "<missing>"),
++        ("Environment evidence Artifact", env_value("ENVIRONMENT_EVIDENCE_ARTIFACT_NAME", env) or "<missing>"),
++    ]
++    table = "\n".join(f"| {label} | `{value}` |" for label, value in rows)
++    return "\n".join(
++        [
++            "# pr-ci-gate Summary",
++            "",
++            "| Item | Value |",
++            "|---|---|",
++            table,
++            "",
++            "## Gate failure reasons",
++            "",
++            reason_lines,
++            "",
++        ]
++    )
++
++
++def parse_args(argv: list[str]) -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description="Evaluate the Lesson 5.4 PR CI gate.")
++    parser.add_argument("--github-step-summary")
++    return parser.parse_args(argv)
++
++
++def main(argv: list[str]) -> int:
++    args = parse_args(argv)
++    env = dict(os.environ)
++    result = evaluate_gate(env)
++    summary = build_summary(env, result)
++    append_step_summary(args.github_step_summary, summary)
++    print(summary)
++    if result["gate_result"] != "success":
++        print("ERROR: pr-ci-gate failed:", file=sys.stderr)
++        for reason in result["failure_reasons"]:
++            print(f" - {reason}", file=sys.stderr)
++        return 1
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv[1:]))
+diff --git a/terraform/environments/ut/main.tf b/terraform/environments/ut/main.tf
+new file mode 100644
+index 0000000000000000000000000000000000000000..c66d53c5f52dd594e4573d139563742d9bd42203
+--- /dev/null
++++ b/terraform/environments/ut/main.tf
+@@ -0,0 +1,51 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++locals {
++  resource_prefix = "ut-${replace(lower(var.environment_face_id), "_", "-")}"
++  common_labels = {
++    environment_pattern_id = "UT"
++    environment_face_id    = var.environment_face_id
++    test_run_id            = var.test_run_id
++    issue_number           = var.issue_number
++    workflow_run_id        = var.workflow_run_id
++    workflow_run_attempt   = var.workflow_run_attempt
++    repository             = var.repository
++    managed_by             = "github-actions-pr-ci"
++  }
++}
++
++resource "docker_network" "ut" {
++  name = "${local.resource_prefix}-net"
++
++  dynamic "labels" {
++    for_each = local.common_labels
++    content {
++      label = labels.key
++      value = labels.value
++    }
++  }
++}
++
++resource "docker_container" "target" {
++  name     = "${local.resource_prefix}-target"
++  image    = var.target_image_name
++  command  = ["sleep", "infinity"]
++  must_run = true
++
++  networks_advanced {
++    name = docker_network.ut.name
++  }
++
++  ports {
++    internal = 80
++    external = var.host_http_port
++  }
++
++  dynamic "labels" {
++    for_each = local.common_labels
++    content {
++      label = labels.key
++      value = labels.value
++    }
++  }
++}
+diff --git a/terraform/environments/ut/outputs.tf b/terraform/environments/ut/outputs.tf
+new file mode 100644
+index 0000000000000000000000000000000000000000..c23368416249f50c5dd81826f366e91f77d666eb
+--- /dev/null
++++ b/terraform/environments/ut/outputs.tf
+@@ -0,0 +1,38 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++output "container_name" {
++  description = "Target container name."
++  value       = docker_container.target.name
++}
++
++output "network_name" {
++  description = "UT Docker network name."
++  value       = docker_network.ut.name
++}
++
++output "host_http_url" {
++  description = "Runner-side URL for Nginx-proxied startup checks."
++  value       = "http://127.0.0.1:${var.host_http_port}"
++}
++
++output "managed_label_filter" {
++  description = "Docker CLI label filter for Lesson 5.4 cleanup and residue verification."
++  value       = "label=test_run_id=${var.test_run_id}"
++}
++
++output "ansible_inventory" {
++  description = "YAML inventory for Ansible Docker connection."
++  value = yamlencode({
++    all = {
++      hosts = {
++        ms1_target = {
++          ansible_connection         = "community.docker.docker"
++          ansible_host               = docker_container.target.name
++          ansible_python_interpreter = "/usr/bin/python3"
++          app_port                   = 8080
++          nginx_port                 = 80
++        }
++      }
++    }
++  })
++}
+diff --git a/terraform/environments/ut/providers.tf b/terraform/environments/ut/providers.tf
+new file mode 100644
+index 0000000000000000000000000000000000000000..d231c12fbf945e428a48b09466250c88398294af
+--- /dev/null
++++ b/terraform/environments/ut/providers.tf
+@@ -0,0 +1,3 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++provider "docker" {}
+diff --git a/terraform/environments/ut/variables.tf b/terraform/environments/ut/variables.tf
+new file mode 100644
+index 0000000000000000000000000000000000000000..92e00dbaa23cfcca12d4bab55abaf63ee5ea12b1
+--- /dev/null
++++ b/terraform/environments/ut/variables.tf
+@@ -0,0 +1,42 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++variable "environment_face_id" {
++  description = "Environment face identifier used for names, labels, inventory, and cleanup."
++  type        = string
++}
++
++variable "target_image_name" {
++  description = "Locally built Ubuntu 24.04 target image name."
++  type        = string
++}
++
++variable "host_http_port" {
++  description = "Host port mapped to target container port 80 for Nginx-proxied startup checks."
++  type        = number
++  default     = 18080
++}
++
++variable "test_run_id" {
++  description = "PR CI Test run ID."
++  type        = string
++}
++
++variable "issue_number" {
++  description = "Linked GitHub Issue number."
++  type        = string
++}
++
++variable "workflow_run_id" {
++  description = "GitHub Actions workflow run ID."
++  type        = string
++}
++
++variable "workflow_run_attempt" {
++  description = "GitHub Actions workflow run attempt."
++  type        = string
++}
++
++variable "repository" {
++  description = "GitHub repository full name."
++  type        = string
++}
+diff --git a/terraform/environments/ut/versions.tf b/terraform/environments/ut/versions.tf
+new file mode 100644
+index 0000000000000000000000000000000000000000..6d9d03dde17f13009fc1e2295175e4dc8d225a5e
+--- /dev/null
++++ b/terraform/environments/ut/versions.tf
+@@ -0,0 +1,12 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++terraform {
++  required_version = "= 1.14.1"
++
++  required_providers {
++    docker = {
++      source  = "kreuzwerker/docker"
++      version = "= 4.5.0"
++    }
++  }
++}
+diff --git a/tests/pr-ci/test_environment_lifecycle.py b/tests/pr-ci/test_environment_lifecycle.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e7b4596977cf79b3bc39a60d18c2c79e2ac6a88b
+--- /dev/null
++++ b/tests/pr-ci/test_environment_lifecycle.py
+@@ -0,0 +1,231 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++import importlib.util
++import hashlib
++import json
++import sys
++from pathlib import Path
++
++
++SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts" / "pr-ci"
++sys.path.insert(0, str(SCRIPT_DIR))
++MODULE_PATH = SCRIPT_DIR / "environment_lifecycle.py"
++SPEC = importlib.util.spec_from_file_location("environment_lifecycle", MODULE_PATH)
++environment_lifecycle = importlib.util.module_from_spec(SPEC)
++assert SPEC.loader is not None
++sys.modules[SPEC.name] = environment_lifecycle
++SPEC.loader.exec_module(environment_lifecycle)
++
++
++def write_build_artifact(build_dir, version="v0.0.0+b.1.a.1"):
++    build_dir.mkdir()
++    binary = build_dir / "go-app-linux-amd64"
++    binary.write_bytes(b"fake-linux-amd64-binary")
++    checksum = hashlib.sha256(binary.read_bytes()).hexdigest()
++    (build_dir / "go-app-linux-amd64.sha256").write_text(
++        f"{checksum}  go-app-linux-amd64\n",
++        encoding="utf-8",
++    )
++    (build_dir / "manifest.json").write_text(
++        json.dumps({"build_artifact_version": version}),
++        encoding="utf-8",
++    )
++    return checksum
++
++
++def test_environment_face_id_uses_issue_run_and_attempt():
++    assert environment_lifecycle.environment_face_id("7", "123456", "2") == "UT-7-123456-A2"
++
++
++def test_early_failure_finalizes_environment_evidence_without_docker(tmp_path):
++    output_dir = tmp_path / "evidence"
++    missing_build_dir = tmp_path / "missing-build-artifact"
++
++    rc = environment_lifecycle.main(
++        [
++            "--output-dir",
++            str(output_dir),
++            "--build-artifact-dir",
++            str(missing_build_dir),
++            "--repository",
++            "RanamicusTechnology/11-env-hands-on",
++            "--workflow-run-id",
++            "100",
++            "--workflow-run-attempt",
++            "1",
++            "--test-run-id",
++            "TR-UT-ISSUE-7-100-A1",
++            "--issue-number",
++            "7",
++            "--target-version",
++            "0.0.0",
++            "--required-final-stage",
++            "UT",
++            "--pr-number",
++            "8",
++            "--pr-head-sha",
++            "abc123",
++            "--governance-job-result",
++            "failure",
++            "--governance-result",
++            "failure",
++            "--static-analysis-job-result",
++            "skipped",
++            "--static-analysis-result",
++            "",
++            "--unit-test-job-result",
++            "skipped",
++            "--unit-test-result",
++            "",
++            "--build-package-job-result",
++            "skipped",
++            "--build-package-result",
++            "",
++            "--build-artifact-name",
++            "",
++            "--build-artifact-id",
++            "",
++            "--build-artifact-version",
++            "",
++            "--build-artifact-checksum",
++            "",
++            "--build-artifact-uploaded",
++            "false",
++            "--created-at",
++            "2026-07-05T00:00:00Z",
++        ]
++    )
++
++    assert rc == 0
++    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
++    result = json.loads(
++        (output_dir / "environment-lifecycle-result.json").read_text(encoding="utf-8")
++    )
++    assert result["environment_lifecycle_result"] == "skipped_prerequisites"
++    assert manifest["environment_face_id_or_not_created"] == "NOT_CREATED"
++    assert manifest["environment_creation_state"] == "NotStarted"
++    assert manifest["test_result"] == "FailedBeforeTest"
++    assert manifest["cleanup_state"] == "Completed"
++    assert manifest["cleanup_target_count"] == 0
++    assert manifest["remaining_resource_count"] == 0
++    assert "NotRequired" not in json.dumps(manifest)
++
++
++def test_residue_verification_preserves_cleanup_not_attempted(tmp_path):
++    state = environment_lifecycle.LifecycleState(
++        prerequisites_met=True,
++        cleanup_state="NotAttempted",
++    )
++    logs_dir = tmp_path / "logs"
++    logs_dir.mkdir()
++
++    environment_lifecycle.verify_residue(
++        state,
++        root=tmp_path,
++        logs_dir=logs_dir,
++        label_filter="label=test_run_id=TR-UT-ISSUE-7-100-A1",
++    )
++
++    assert state.cleanup_state == "NotAttempted"
++    assert state.residue_verification_result == "NotAttempted"
++
++
++def test_terraform_fmt_failure_before_apply_records_completed_cleanup(tmp_path):
++    output_dir = tmp_path / "evidence"
++    build_dir = tmp_path / "build-artifact"
++    version = "v0.0.0+b.1.a.1"
++    checksum = write_build_artifact(build_dir, version)
++    original_run_command = environment_lifecycle.run_command
++
++    def fake_run_command(args, *, cwd, log_path, append=False, check=False):
++        command = " ".join(args)
++        if args[:2] == ["docker", "build"]:
++            result = environment_lifecycle.CommandResult(args, 0, "image built\n")
++        elif args == ["terraform", "fmt", "-check"]:
++            result = environment_lifecycle.CommandResult(args, 1, "main.tf\n")
++        elif args[0] == "docker":
++            result = environment_lifecycle.CommandResult(args, 0, "")
++        else:
++            result = environment_lifecycle.CommandResult(args, 0, "")
++
++        message = f"$ {command}\n{result.stdout}"
++        if append:
++            environment_lifecycle.append_log(log_path, message)
++        else:
++            environment_lifecycle.write_log(log_path, message)
++        return result
++
++    environment_lifecycle.run_command = fake_run_command
++    try:
++        rc = environment_lifecycle.main(
++            [
++                "--output-dir",
++                str(output_dir),
++                "--build-artifact-dir",
++                str(build_dir),
++                "--repository",
++                "RanamicusTechnology/11-env-hands-on",
++                "--workflow-run-id",
++                "28729279045",
++                "--workflow-run-attempt",
++                "1",
++                "--test-run-id",
++                "TR-UT-ISSUE-7-28729279045-A1",
++                "--issue-number",
++                "7",
++                "--target-version",
++                "0.0.0",
++                "--required-final-stage",
++                "UT",
++                "--pr-number",
++                "8",
++                "--pr-head-sha",
++                "6780c750712f373187be0654642548eb6e93f841",
++                "--governance-job-result",
++                "success",
++                "--governance-result",
++                "success",
++                "--static-analysis-job-result",
++                "success",
++                "--static-analysis-result",
++                "success",
++                "--unit-test-job-result",
++                "success",
++                "--unit-test-result",
++                "success",
++                "--build-package-job-result",
++                "success",
++                "--build-package-result",
++                "success",
++                "--build-artifact-name",
++                "build-go-app_TR-UT-ISSUE-7-28729279045-A1",
++                "--build-artifact-id",
++                "8088230457",
++                "--build-artifact-version",
++                version,
++                "--build-artifact-checksum",
++                checksum,
++                "--build-artifact-uploaded",
++                "true",
++                "--created-at",
++                "2026-07-05T00:00:00Z",
++            ]
++        )
++    finally:
++        environment_lifecycle.run_command = original_run_command
++
++    assert rc == 0
++    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
++    result = json.loads(
++        (output_dir / "environment-lifecycle-result.json").read_text(encoding="utf-8")
++    )
++    assert result["environment_lifecycle_result"] == "failure"
++    assert result["failure_reasons"] == ["terraform fmt -check failed"]
++    assert result["cleanup"]["environment_resources_may_exist"] is False
++    assert result["cleanup"]["cleanup_attempted"] is True
++    assert manifest["environment_creation_state"] == "Failed"
++    assert manifest["cleanup_state"] == "Completed"
++    assert manifest["cleanup_target_count"] == 0
++    assert manifest["remaining_resource_count"] == 0
++    assert manifest["residue_verification_result"] == "Passed"
++    assert manifest["cleanup_warning"] is False
+diff --git a/tests/pr-ci/test_pr_ci_gate.py b/tests/pr-ci/test_pr_ci_gate.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..13962fb0f4c8f42773075ab7a0028619d65eeda5
+--- /dev/null
++++ b/tests/pr-ci/test_pr_ci_gate.py
+@@ -0,0 +1,109 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++import importlib.util
++import sys
++from pathlib import Path
++
++
++SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts" / "pr-ci"
++sys.path.insert(0, str(SCRIPT_DIR))
++MODULE_PATH = SCRIPT_DIR / "pr_ci_gate.py"
++SPEC = importlib.util.spec_from_file_location("pr_ci_gate", MODULE_PATH)
++pr_ci_gate = importlib.util.module_from_spec(SPEC)
++assert SPEC.loader is not None
++sys.modules[SPEC.name] = pr_ci_gate
++SPEC.loader.exec_module(pr_ci_gate)
++
++
++def success_env():
++    return {
++        "GOVERNANCE_JOB_RESULT": "success",
++        "STATIC_ANALYSIS_JOB_RESULT": "success",
++        "UNIT_TEST_JOB_RESULT": "success",
++        "BUILD_PACKAGE_JOB_RESULT": "success",
++        "ENVIRONMENT_LIFECYCLE_JOB_RESULT": "success",
++        "TEST_RUN_ID": "TR-UT-ISSUE-7-100-A1",
++        "ISSUE_NUMBER": "7",
++        "TARGET_VERSION": "0.0.0",
++        "REQUIRED_FINAL_STAGE": "UT",
++        "GOVERNANCE_RESULT": "success",
++        "STATIC_ANALYSIS_RESULT": "success",
++        "UNIT_TEST_RESULT": "success",
++        "BUILD_PACKAGE_RESULT": "success",
++        "GOVERNANCE_EVIDENCE_ARTIFACT_UPLOADED": "true",
++        "GOVERNANCE_EVIDENCE_ARTIFACT_NAME": "evidence-governance_TR-UT-ISSUE-7-100-A1",
++        "GOVERNANCE_EVIDENCE_ARTIFACT_ID": "1",
++        "STATIC_ANALYSIS_EVIDENCE_ARTIFACT_UPLOADED": "true",
++        "STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME": "evidence-static-analysis_TR-UT-ISSUE-7-100-A1",
++        "STATIC_ANALYSIS_EVIDENCE_ARTIFACT_ID": "2",
++        "UNIT_TEST_EVIDENCE_ARTIFACT_UPLOADED": "true",
++        "UNIT_TEST_EVIDENCE_ARTIFACT_NAME": "evidence-unit-test_TR-UT-ISSUE-7-100-A1",
++        "UNIT_TEST_EVIDENCE_ARTIFACT_ID": "3",
++        "BUILD_PACKAGE_EVIDENCE_ARTIFACT_UPLOADED": "true",
++        "BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME": "evidence-build-package_TR-UT-ISSUE-7-100-A1",
++        "BUILD_PACKAGE_EVIDENCE_ARTIFACT_ID": "4",
++        "BUILD_ARTIFACT_UPLOADED": "true",
++        "BUILD_ARTIFACT_NAME": "build-go-app_TR-UT-ISSUE-7-100-A1",
++        "BUILD_ARTIFACT_ID": "5",
++        "BUILD_ARTIFACT_VERSION": "v0.0.0+b.1.a.1",
++        "BUILD_ARTIFACT_CHECKSUM": "abc",
++        "ENVIRONMENT_LIFECYCLE_RESULT": "success",
++        "ENVIRONMENT_EVIDENCE_MANIFEST_FINALIZED": "true",
++        "ENVIRONMENT_CREATION_STATE": "Completed",
++        "READINESS_CHECK_EXECUTION_STATE": "Completed",
++        "READINESS_CHECK_RESULT": "Passed",
++        "OVERALL_TEST_RESULT": "Passed",
++        "CLEANUP_STATE": "Completed",
++        "ENVIRONMENT_EVIDENCE_ARTIFACT_UPLOADED": "true",
++        "ENVIRONMENT_EVIDENCE_ARTIFACT_NAME": "evidence-environment_TR-UT-ISSUE-7-100-A1",
++        "ENVIRONMENT_EVIDENCE_ARTIFACT_ID": "6",
++    }
++
++
++def test_gate_success_when_environment_evidence_and_cleanup_completed():
++    result = pr_ci_gate.evaluate_gate(success_env())
++
++    assert result["gate_result"] == "success"
++    assert result["failure_reasons"] == []
++
++
++def test_gate_fails_when_cleanup_was_not_attempted():
++    env = success_env()
++    env["CLEANUP_STATE"] = "NotAttempted"
++
++    result = pr_ci_gate.evaluate_gate(env)
++
++    assert result["gate_result"] == "failure"
++    assert any("NotAttempted" in reason for reason in result["failure_reasons"])
++
++
++def test_gate_fails_when_environment_lifecycle_job_failed():
++    env = success_env()
++    env["ENVIRONMENT_LIFECYCLE_JOB_RESULT"] = "failure"
++
++    result = pr_ci_gate.evaluate_gate(env)
++
++    assert result["gate_result"] == "failure"
++    assert any("environment-lifecycle job result is failure" in reason for reason in result["failure_reasons"])
++
++
++def test_gate_fails_when_readiness_check_failed():
++    env = success_env()
++    env["READINESS_CHECK_EXECUTION_STATE"] = "Failed"
++    env["READINESS_CHECK_RESULT"] = "Failed"
++    env["OVERALL_TEST_RESULT"] = "Failed"
++
++    result = pr_ci_gate.evaluate_gate(env)
++
++    assert result["gate_result"] == "failure"
++    assert any("readiness_check_result is Failed" in reason for reason in result["failure_reasons"])
++
++
++def test_gate_allows_cleanup_warning_state():
++    env = success_env()
++    env["CLEANUP_STATE"] = "CompletedWithWarning"
++    env["CLEANUP_WARNING"] = "true"
++
++    result = pr_ci_gate.evaluate_gate(env)
++
++    assert result["gate_result"] == "success"

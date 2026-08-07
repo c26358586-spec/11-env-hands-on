@@ -1,0 +1,62 @@
+# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+plan.out
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Build outputs
+/bin/
+/dist/
+/out/
+coverage.out
+*.test
+*.prof
+
+# Evidence and logs
+/evidence/*
+!/evidence/.gitkeep
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Local environment and secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+/credentials/
+/secrets/
+
+# OS and IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,1593 @@
+diff --git a/.github/workflows/pr-ci.yml b/.github/workflows/pr-ci.yml
+index a299e361f08aad0114301f79e25d5183c3789569..37d6722626b4f1ff44c1e9785a09a8a3e941c53c 100644
+--- a/.github/workflows/pr-ci.yml
++++ b/.github/workflows/pr-ci.yml
+@@ -64,25 +64,289 @@ jobs:
+           if-no-files-found: error
+           retention-days: 30
+
++  static-analysis:
++    name: static-analysis
++    runs-on: ubuntu-latest
++    timeout-minutes: 15
++    needs:
++      - governance-check
++    outputs:
++      static_analysis_result: ${{ steps.static-analysis.outputs.static_analysis_result }}
++      evidence_artifact_name: ${{ steps.static-analysis.outputs.evidence_artifact_name }}
++      evidence_artifact_uploaded: ${{ steps.upload-static-analysis-evidence.outcome == 'success' }}
++      evidence_artifact_id: ${{ steps.upload-static-analysis-evidence.outputs.artifact-id }}
++    steps:
++      - name: Checkout repository
++        # actions/checkout v4.2.2
++        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
++
++      - name: Set up Go
++        # actions/setup-go v5.5.0
++        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
++        with:
++          go-version: "1.26.4"
++
++      - name: Run Go static analysis
++        id: static-analysis
++        continue-on-error: true
++        run: |
++          set -Eeuo pipefail
++          python3 scripts/pr-ci/static_analysis.py \
++            --output-dir "${RUNNER_TEMP}/pr-ci-static-analysis" \
++            --repository "${{ github.repository }}" \
++            --workflow-run-id "${{ github.run_id }}" \
++            --workflow-run-attempt "${{ github.run_attempt }}" \
++            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
++            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
++            --target-version "${{ needs.governance-check.outputs.target_version }}" \
++            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
++            --pr-number "${{ github.event.pull_request.number }}" \
++            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
++            --github-output "${GITHUB_OUTPUT}" \
++            --github-step-summary "${GITHUB_STEP_SUMMARY}"
++
++      - name: Upload static-analysis evidence
++        id: upload-static-analysis-evidence
++        if: always()
++        # actions/upload-artifact v4.6.2
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
++        with:
++          name: ${{ steps.static-analysis.outputs.evidence_artifact_name || format('evidence-static-analysis_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
++          path: ${{ runner.temp }}/pr-ci-static-analysis/
++          if-no-files-found: error
++          retention-days: 30
++
++      - name: Enforce static-analysis result
++        if: always()
++        env:
++          STATIC_ANALYSIS_RESULT: ${{ steps.static-analysis.outputs.static_analysis_result }}
++          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-static-analysis-evidence.outcome == 'success' }}
++        run: |
++          set -Eeuo pipefail
++          if [ "${STATIC_ANALYSIS_RESULT:-}" != "success" ]; then
++            echo "ERROR: static-analysis result is ${STATIC_ANALYSIS_RESULT:-<missing>}" >&2
++            exit 1
++          fi
++          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
++            echo "ERROR: static-analysis evidence Artifact upload did not succeed." >&2
++            exit 1
++          fi
++
++  unit-test:
++    name: unit-test
++    runs-on: ubuntu-latest
++    timeout-minutes: 15
++    needs:
++      - governance-check
++    outputs:
++      unit_test_result: ${{ steps.unit-test.outputs.unit_test_result }}
++      evidence_artifact_name: ${{ steps.unit-test.outputs.evidence_artifact_name }}
++      evidence_artifact_uploaded: ${{ steps.upload-unit-test-evidence.outcome == 'success' }}
++      evidence_artifact_id: ${{ steps.upload-unit-test-evidence.outputs.artifact-id }}
++    steps:
++      - name: Checkout repository
++        # actions/checkout v4.2.2
++        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
++
++      - name: Set up Go
++        # actions/setup-go v5.5.0
++        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
++        with:
++          go-version: "1.26.4"
++
++      - name: Install gotestsum
++        run: |
++          set -Eeuo pipefail
++          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
++          go install gotest.tools/gotestsum@v1.13.0
++
++      - name: Run Go unit tests
++        id: unit-test
++        continue-on-error: true
++        run: |
++          set -Eeuo pipefail
++          python3 scripts/pr-ci/unit_test.py \
++            --output-dir "${RUNNER_TEMP}/pr-ci-unit-test" \
++            --repository "${{ github.repository }}" \
++            --workflow-run-id "${{ github.run_id }}" \
++            --workflow-run-attempt "${{ github.run_attempt }}" \
++            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
++            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
++            --target-version "${{ needs.governance-check.outputs.target_version }}" \
++            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
++            --pr-number "${{ github.event.pull_request.number }}" \
++            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
++            --github-output "${GITHUB_OUTPUT}" \
++            --github-step-summary "${GITHUB_STEP_SUMMARY}"
++
++      - name: Upload unit-test evidence
++        id: upload-unit-test-evidence
++        if: always()
++        # actions/upload-artifact v4.6.2
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
++        with:
++          name: ${{ steps.unit-test.outputs.evidence_artifact_name || format('evidence-unit-test_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
++          path: ${{ runner.temp }}/pr-ci-unit-test/
++          if-no-files-found: error
++          retention-days: 30
++
++      - name: Enforce unit-test result
++        if: always()
++        env:
++          UNIT_TEST_RESULT: ${{ steps.unit-test.outputs.unit_test_result }}
++          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-unit-test-evidence.outcome == 'success' }}
++        run: |
++          set -Eeuo pipefail
++          if [ "${UNIT_TEST_RESULT:-}" != "success" ]; then
++            echo "ERROR: unit-test result is ${UNIT_TEST_RESULT:-<missing>}" >&2
++            exit 1
++          fi
++          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
++            echo "ERROR: unit-test evidence Artifact upload did not succeed." >&2
++            exit 1
++          fi
++
++  build-package:
++    name: build-package
++    runs-on: ubuntu-latest
++    timeout-minutes: 15
++    needs:
++      - governance-check
++      - static-analysis
++      - unit-test
++    outputs:
++      build_package_result: ${{ steps.build-package.outputs.build_package_result }}
++      build_artifact_name: ${{ steps.build-package.outputs.build_artifact_name }}
++      build_artifact_version: ${{ steps.build-package.outputs.build_artifact_version }}
++      build_artifact_checksum: ${{ steps.build-package.outputs.build_artifact_checksum }}
++      build_artifact_uploaded: ${{ steps.upload-build-artifact.outcome == 'success' }}
++      build_artifact_id: ${{ steps.upload-build-artifact.outputs.artifact-id }}
++      evidence_artifact_name: ${{ steps.build-package.outputs.evidence_artifact_name }}
++      evidence_artifact_uploaded: ${{ steps.upload-build-package-evidence.outcome == 'success' }}
++      evidence_artifact_id: ${{ steps.upload-build-package-evidence.outputs.artifact-id }}
++    steps:
++      - name: Checkout repository
++        # actions/checkout v4.2.2
++        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
++
++      - name: Set up Go
++        # actions/setup-go v5.5.0
++        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
++        with:
++          go-version: "1.26.4"
++
++      - name: Build and package Go app
++        id: build-package
++        continue-on-error: true
++        run: |
++          set -Eeuo pipefail
++          python3 scripts/pr-ci/build_package.py \
++            --build-output-dir "${RUNNER_TEMP}/pr-ci-build-artifact" \
++            --evidence-output-dir "${RUNNER_TEMP}/pr-ci-build-package-evidence" \
++            --repository "${{ github.repository }}" \
++            --workflow-run-id "${{ github.run_id }}" \
++            --workflow-run-number "${{ github.run_number }}" \
++            --workflow-run-attempt "${{ github.run_attempt }}" \
++            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
++            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
++            --target-version "${{ needs.governance-check.outputs.target_version }}" \
++            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
++            --pr-number "${{ github.event.pull_request.number }}" \
++            --pr-head-ref "${{ github.event.pull_request.head.ref }}" \
++            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
++            --github-output "${GITHUB_OUTPUT}" \
++            --github-step-summary "${GITHUB_STEP_SUMMARY}"
++
++      - name: Upload Go app Build Artifact
++        id: upload-build-artifact
++        if: always() && steps.build-package.outputs.build_package_result == 'success'
++        # actions/upload-artifact v4.6.2
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
++        with:
++          name: ${{ steps.build-package.outputs.build_artifact_name }}
++          path: ${{ runner.temp }}/pr-ci-build-artifact/
++          if-no-files-found: error
++          retention-days: 30
++
++      - name: Upload build-package evidence
++        id: upload-build-package-evidence
++        if: always()
++        # actions/upload-artifact v4.6.2
++        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
++        with:
++          name: ${{ steps.build-package.outputs.evidence_artifact_name || format('evidence-build-package_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
++          path: ${{ runner.temp }}/pr-ci-build-package-evidence/
++          if-no-files-found: error
++          retention-days: 30
++
++      - name: Enforce build-package result
++        if: always()
++        env:
++          BUILD_PACKAGE_RESULT: ${{ steps.build-package.outputs.build_package_result }}
++          BUILD_ARTIFACT_UPLOADED: ${{ steps.upload-build-artifact.outcome == 'success' }}
++          BUILD_ARTIFACT_CHECKSUM: ${{ steps.build-package.outputs.build_artifact_checksum }}
++          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-build-package-evidence.outcome == 'success' }}
++        run: |
++          set -Eeuo pipefail
++          if [ "${BUILD_PACKAGE_RESULT:-}" != "success" ]; then
++            echo "ERROR: build-package result is ${BUILD_PACKAGE_RESULT:-<missing>}" >&2
++            exit 1
++          fi
++          if [ "${BUILD_ARTIFACT_UPLOADED}" != "true" ]; then
++            echo "ERROR: Build Artifact upload did not succeed." >&2
++            exit 1
++          fi
++          if [ -z "${BUILD_ARTIFACT_CHECKSUM:-}" ]; then
++            echo "ERROR: Build Artifact checksum is missing." >&2
++            exit 1
++          fi
++          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
++            echo "ERROR: build-package evidence Artifact upload did not succeed." >&2
++            exit 1
++          fi
++
+   pr-ci-gate:
+     name: pr-ci-gate
+     runs-on: ubuntu-latest
+     timeout-minutes: 10
+     needs:
+       - governance-check
++      - static-analysis
++      - unit-test
++      - build-package
+     if: always()
+     steps:
+       - name: Evaluate PR CI gate
+         env:
+           GOVERNANCE_JOB_RESULT: ${{ needs.governance-check.result }}
++          STATIC_ANALYSIS_JOB_RESULT: ${{ needs.static-analysis.result }}
++          UNIT_TEST_JOB_RESULT: ${{ needs.unit-test.result }}
++          BUILD_PACKAGE_JOB_RESULT: ${{ needs.build-package.result }}
+           TEST_RUN_ID: ${{ needs.governance-check.outputs.test_run_id }}
+           GOVERNANCE_RESULT: ${{ needs.governance-check.outputs.governance_result }}
++          STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.outputs.static_analysis_result }}
++          UNIT_TEST_RESULT: ${{ needs.unit-test.outputs.unit_test_result }}
++          BUILD_PACKAGE_RESULT: ${{ needs.build-package.outputs.build_package_result }}
+           ISSUE_NUMBER: ${{ needs.governance-check.outputs.issue_number }}
+           TARGET_VERSION: ${{ needs.governance-check.outputs.target_version }}
+           REQUIRED_FINAL_STAGE: ${{ needs.governance-check.outputs.required_final_stage }}
+-          EVIDENCE_ARTIFACT_NAME: ${{ needs.governance-check.outputs.evidence_artifact_name }}
+-          EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.governance-check.outputs.evidence_artifact_uploaded }}
+-          EVIDENCE_ARTIFACT_ID: ${{ needs.governance-check.outputs.evidence_artifact_id }}
++          GOVERNANCE_EVIDENCE_ARTIFACT_NAME: ${{ needs.governance-check.outputs.evidence_artifact_name }}
++          GOVERNANCE_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.governance-check.outputs.evidence_artifact_uploaded }}
++          GOVERNANCE_EVIDENCE_ARTIFACT_ID: ${{ needs.governance-check.outputs.evidence_artifact_id }}
++          STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME: ${{ needs.static-analysis.outputs.evidence_artifact_name }}
++          STATIC_ANALYSIS_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.static-analysis.outputs.evidence_artifact_uploaded }}
++          STATIC_ANALYSIS_EVIDENCE_ARTIFACT_ID: ${{ needs.static-analysis.outputs.evidence_artifact_id }}
++          UNIT_TEST_EVIDENCE_ARTIFACT_NAME: ${{ needs.unit-test.outputs.evidence_artifact_name }}
++          UNIT_TEST_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.unit-test.outputs.evidence_artifact_uploaded }}
++          UNIT_TEST_EVIDENCE_ARTIFACT_ID: ${{ needs.unit-test.outputs.evidence_artifact_id }}
++          BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME: ${{ needs.build-package.outputs.evidence_artifact_name }}
++          BUILD_PACKAGE_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.build-package.outputs.evidence_artifact_uploaded }}
++          BUILD_PACKAGE_EVIDENCE_ARTIFACT_ID: ${{ needs.build-package.outputs.evidence_artifact_id }}
++          BUILD_ARTIFACT_NAME: ${{ needs.build-package.outputs.build_artifact_name }}
++          BUILD_ARTIFACT_UPLOADED: ${{ needs.build-package.outputs.build_artifact_uploaded }}
++          BUILD_ARTIFACT_ID: ${{ needs.build-package.outputs.build_artifact_id }}
++          BUILD_ARTIFACT_VERSION: ${{ needs.build-package.outputs.build_artifact_version }}
++          BUILD_ARTIFACT_CHECKSUM: ${{ needs.build-package.outputs.build_artifact_checksum }}
+           PR_NUMBER: ${{ github.event.pull_request.number }}
+           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+@@ -94,35 +358,91 @@ jobs:
+           gate_result="success"
+           reasons=()
+
+-          if [ "${GOVERNANCE_JOB_RESULT}" != "success" ]; then
+-            gate_result="failure"
+-            reasons+=("governance-check job result is ${GOVERNANCE_JOB_RESULT}")
+-          fi
++          require_value() {
++            local label="$1"
++            local value="${2:-}"
++            if [ -z "${value}" ]; then
++              gate_result="failure"
++              reasons+=("required value ${label} is missing")
++            fi
++          }
++
++          require_success_job() {
++            local job_name="$1"
++            local result="${2:-}"
++            if [ "${result}" != "success" ]; then
++              gate_result="failure"
++              reasons+=("${job_name} job result is ${result:-<missing>}")
++            fi
++          }
++
++          require_logical_success() {
++            local label="$1"
++            local result="${2:-}"
++            if [ "${result}" != "success" ]; then
++              gate_result="failure"
++              reasons+=("${label} is ${result:-<missing>}")
++            fi
++          }
++
++          require_uploaded_artifact() {
++            local label="$1"
++            local uploaded="${2:-}"
++            local name="${3:-}"
++            local artifact_id="${4:-}"
++            require_value "${label} Artifact name" "${name}"
++            require_value "${label} Artifact ID" "${artifact_id}"
++            if [ "${uploaded}" != "true" ]; then
++              gate_result="failure"
++              reasons+=("${label} Artifact upload did not succeed")
++            fi
++          }
++
++          require_success_job "governance-check" "${GOVERNANCE_JOB_RESULT}"
++          require_success_job "static-analysis" "${STATIC_ANALYSIS_JOB_RESULT}"
++          require_success_job "unit-test" "${UNIT_TEST_JOB_RESULT}"
++          require_success_job "build-package" "${BUILD_PACKAGE_JOB_RESULT}"
+
+           for required_name in \
+             TEST_RUN_ID \
+-            GOVERNANCE_RESULT \
+             ISSUE_NUMBER \
+             TARGET_VERSION \
+-            REQUIRED_FINAL_STAGE \
+-            EVIDENCE_ARTIFACT_NAME \
+-            EVIDENCE_ARTIFACT_UPLOADED; do
+-            required_value="${!required_name:-}"
+-            if [ -z "${required_value}" ]; then
+-              gate_result="failure"
+-              reasons+=("required output ${required_name} is missing")
+-            fi
++            REQUIRED_FINAL_STAGE; do
++            require_value "${required_name}" "${!required_name:-}"
+           done
+
+-          if [ "${GOVERNANCE_RESULT}" != "success" ]; then
+-            gate_result="failure"
+-            reasons+=("governance_result is ${GOVERNANCE_RESULT:-<missing>}")
+-          fi
++          require_logical_success "governance_result" "${GOVERNANCE_RESULT:-}"
++          require_logical_success "static_analysis_result" "${STATIC_ANALYSIS_RESULT:-}"
++          require_logical_success "unit_test_result" "${UNIT_TEST_RESULT:-}"
++          require_logical_success "build_package_result" "${BUILD_PACKAGE_RESULT:-}"
+
+-          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
+-            gate_result="failure"
+-            reasons+=("governance evidence artifact upload did not succeed")
+-          fi
++          require_uploaded_artifact \
++            "governance evidence" \
++            "${GOVERNANCE_EVIDENCE_ARTIFACT_UPLOADED:-}" \
++            "${GOVERNANCE_EVIDENCE_ARTIFACT_NAME:-}" \
++            "${GOVERNANCE_EVIDENCE_ARTIFACT_ID:-}"
++          require_uploaded_artifact \
++            "static-analysis evidence" \
++            "${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_UPLOADED:-}" \
++            "${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME:-}" \
++            "${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_ID:-}"
++          require_uploaded_artifact \
++            "unit-test evidence" \
++            "${UNIT_TEST_EVIDENCE_ARTIFACT_UPLOADED:-}" \
++            "${UNIT_TEST_EVIDENCE_ARTIFACT_NAME:-}" \
++            "${UNIT_TEST_EVIDENCE_ARTIFACT_ID:-}"
++          require_uploaded_artifact \
++            "build-package evidence" \
++            "${BUILD_PACKAGE_EVIDENCE_ARTIFACT_UPLOADED:-}" \
++            "${BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME:-}" \
++            "${BUILD_PACKAGE_EVIDENCE_ARTIFACT_ID:-}"
++          require_uploaded_artifact \
++            "Build" \
++            "${BUILD_ARTIFACT_UPLOADED:-}" \
++            "${BUILD_ARTIFACT_NAME:-}" \
++            "${BUILD_ARTIFACT_ID:-}"
++          require_value "Build Artifact version" "${BUILD_ARTIFACT_VERSION:-}"
++          require_value "Build Artifact checksum" "${BUILD_ARTIFACT_CHECKSUM:-}"
+
+           {
+             echo "# pr-ci-gate Summary"
+@@ -130,7 +450,6 @@ jobs:
+             echo "| Item | Value |"
+             echo "|---|---|"
+             echo "| Gate result | \`${gate_result}\` |"
+-            echo "| governance-check job result | \`${GOVERNANCE_JOB_RESULT}\` |"
+             echo "| Pull Request | \`#${PR_NUMBER:-<missing>}\` |"
+             echo "| Branch | \`${PR_HEAD_REF:-<missing>}\` |"
+             echo "| Head SHA | \`${PR_HEAD_SHA:-<missing>}\` |"
+@@ -138,12 +457,24 @@ jobs:
+             echo "| Issue | \`${ISSUE_NUMBER:-<missing>}\` |"
+             echo "| target_version | \`${TARGET_VERSION:-<missing>}\` |"
+             echo "| required_final_stage | \`${REQUIRED_FINAL_STAGE:-<missing>}\` |"
+-            echo "| governance_result | \`${GOVERNANCE_RESULT:-<missing>}\` |"
+             echo "| Workflow run ID | \`${WORKFLOW_RUN_ID:-<missing>}\` |"
+             echo "| Run attempt | \`A${WORKFLOW_RUN_ATTEMPT:-<missing>}\` |"
+-            echo "| Governance evidence Artifact | \`${EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
+-            echo "| Governance evidence Artifact upload result | \`${EVIDENCE_ARTIFACT_UPLOADED:-<missing>}\` |"
+-            echo "| Governance evidence Artifact ID | \`${EVIDENCE_ARTIFACT_ID:-<missing>}\` |"
++            echo "| governance-check job result | \`${GOVERNANCE_JOB_RESULT:-<missing>}\` |"
++            echo "| governance logical result | \`${GOVERNANCE_RESULT:-<missing>}\` |"
++            echo "| static-analysis job result | \`${STATIC_ANALYSIS_JOB_RESULT:-<missing>}\` |"
++            echo "| static-analysis logical result | \`${STATIC_ANALYSIS_RESULT:-<missing>}\` |"
++            echo "| unit-test job result | \`${UNIT_TEST_JOB_RESULT:-<missing>}\` |"
++            echo "| unit-test logical result | \`${UNIT_TEST_RESULT:-<missing>}\` |"
++            echo "| build-package job result | \`${BUILD_PACKAGE_JOB_RESULT:-<missing>}\` |"
++            echo "| build-package logical result | \`${BUILD_PACKAGE_RESULT:-<missing>}\` |"
++            echo "| Governance evidence Artifact | \`${GOVERNANCE_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
++            echo "| Static-analysis evidence Artifact | \`${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
++            echo "| Unit-test evidence Artifact | \`${UNIT_TEST_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
++            echo "| Build-package evidence Artifact | \`${BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
++            echo "| Build Artifact | \`${BUILD_ARTIFACT_NAME:-<missing>}\` |"
++            echo "| Build Artifact ID | \`${BUILD_ARTIFACT_ID:-<missing>}\` |"
++            echo "| Build Artifact version | \`${BUILD_ARTIFACT_VERSION:-<missing>}\` |"
++            echo "| Build Artifact checksum | \`${BUILD_ARTIFACT_CHECKSUM:-<missing>}\` |"
+             echo
+             echo "## Gate failure reasons"
+             echo
+diff --git a/app/health_test.go b/app/health_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..218753ad4da4519d6e93dab90f6da8476deebf4c
+--- /dev/null
++++ b/app/health_test.go
+@@ -0,0 +1,47 @@
++/*
++Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++*/
++
++package main
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++)
++
++func TestHealthPayload(t *testing.T) {
++	version = "test-version"
++
++	payload := healthPayload()
++	if payload.Status != "ok" {
++		t.Fatalf("Status = %q, want ok", payload.Status)
++	}
++	if payload.Service != "ms1-go-api" {
++		t.Fatalf("Service = %q, want ms1-go-api", payload.Service)
++	}
++	if payload.Version != "test-version" {
++		t.Fatalf("Version = %q, want test-version", payload.Version)
++	}
++}
++
++func TestHealthHandler(t *testing.T) {
++	version = "test-version"
++
++	req := httptest.NewRequest(http.MethodGet, "/health", nil)
++	rec := httptest.NewRecorder()
++	healthHandler(rec, req)
++
++	if rec.Code != http.StatusOK {
++		t.Fatalf("status code = %d, want %d", rec.Code, http.StatusOK)
++	}
++
++	var got healthResponse
++	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
++		t.Fatalf("decode health response: %v", err)
++	}
++	if got.Status != "ok" || got.Service != "ms1-go-api" || got.Version != "test-version" {
++		t.Fatalf("health response = %+v, want status ok service ms1-go-api version test-version", got)
++	}
++}
+diff --git a/scripts/pr-ci/build_package.py b/scripts/pr-ci/build_package.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f294698b3a487df647fad71787b8eb2f30bcdfc7
+--- /dev/null
++++ b/scripts/pr-ci/build_package.py
+@@ -0,0 +1,299 @@
++#!/usr/bin/env python3
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++from __future__ import annotations
++
++import argparse
++import hashlib
++import os
++import re
++import stat
++import sys
++from pathlib import Path
++from typing import Any
++
++from pr_ci_common import (
++    append_step_summary,
++    bool_to_result,
++    common_evidence_manifest,
++    env_with,
++    relative_existing_files,
++    repo_root,
++    run_command,
++    utc_timestamp,
++    write_github_output,
++    write_json,
++)
++
++
++BINARY_NAME = "go-app-linux-amd64"
++SEMVER_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
++
++
++def normalize_target_version(target_version: str) -> str:
++    normalized = target_version.strip()
++    while normalized.lower().startswith("v"):
++        normalized = normalized[1:]
++    return normalized
++
++
++def build_artifact_version(target_version: str, run_number: str, run_attempt: str) -> str:
++    normalized = normalize_target_version(target_version)
++    if not normalized:
++        return ""
++    return f"v{normalized}+b.{run_number}.a.{run_attempt}"
++
++
++def read_version_file(root: Path) -> str:
++    version_path = root / "VERSION"
++    if not version_path.exists():
++        return ""
++    return version_path.read_text(encoding="utf-8").strip()
++
++
++def sha256_file(path: Path) -> str:
++    digest = hashlib.sha256()
++    with path.open("rb") as binary_file:
++        for chunk in iter(lambda: binary_file.read(1024 * 1024), b""):
++            digest.update(chunk)
++    return digest.hexdigest()
++
++
++def build_summary(
++    *,
++    evidence_manifest: dict[str, Any],
++    result_payload: dict[str, Any],
++) -> str:
++    reasons = result_payload["failure_reasons"] or ["なし"]
++    reason_lines = "\n".join(f"- {reason}" for reason in reasons)
++    return "\n".join(
++        [
++            "# build-package Summary",
++            "",
++            "| Item | Value |",
++            "|---|---|",
++            f"| Result | `{result_payload['build_package_result']}` |",
++            f"| Test run ID | `{evidence_manifest['test_run_id']}` |",
++            f"| Pull Request | `#{evidence_manifest['pull_request_number']}` |",
++            f"| Head SHA | `{evidence_manifest['pr_head_sha']}` |",
++            f"| Issue | `{evidence_manifest['issue_number_or_UNLINKED']}` |",
++            f"| target_version | `{evidence_manifest['target_version'] or '<missing>'}` |",
++            f"| VERSION | `{result_payload['version_file'] or '<missing>'}` |",
++            f"| required_final_stage | `{evidence_manifest['required_final_stage'] or '<missing>'}` |",
++            f"| Evidence Artifact | `{evidence_manifest['artifact_name']}` |",
++            f"| Build Artifact | `{result_payload['build_artifact_name']}` |",
++            f"| Build Artifact version | `{result_payload['build_artifact_version'] or '<missing>'}` |",
++            f"| Binary checksum | `{result_payload['binary_sha256'] or '<missing>'}` |",
++            "",
++            "## Failure reasons",
++            "",
++            reason_lines,
++            "",
++        ]
++    )
++
++
++def parse_args(argv: list[str]) -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description="Build the Lesson 5.3 temporary Go app artifact.")
++    parser.add_argument("--build-output-dir", required=True)
++    parser.add_argument("--evidence-output-dir", required=True)
++    parser.add_argument("--repository", required=True)
++    parser.add_argument("--workflow-run-id", required=True)
++    parser.add_argument("--workflow-run-number", required=True)
++    parser.add_argument("--workflow-run-attempt", required=True)
++    parser.add_argument("--job-name", default="build-package")
++    parser.add_argument("--test-run-id", required=True)
++    parser.add_argument("--issue-number", required=True)
++    parser.add_argument("--target-version", required=True)
++    parser.add_argument("--required-final-stage", required=True)
++    parser.add_argument("--pr-number", required=True)
++    parser.add_argument("--pr-head-ref", required=True)
++    parser.add_argument("--pr-head-sha", required=True)
++    parser.add_argument("--github-output")
++    parser.add_argument("--github-step-summary")
++    parser.add_argument("--created-at")
++    return parser.parse_args(argv)
++
++
++def main(argv: list[str]) -> int:
++    args = parse_args(argv)
++    root = repo_root()
++    app_dir = root / "app"
++    build_dir = Path(args.build_output_dir)
++    evidence_dir = Path(args.evidence_output_dir)
++    logs_dir = evidence_dir / "logs"
++    build_dir.mkdir(parents=True, exist_ok=True)
++    logs_dir.mkdir(parents=True, exist_ok=True)
++
++    created_at = utc_timestamp(args.created_at)
++    evidence_artifact_name = f"evidence-build-package_{args.test_run_id}"
++    build_artifact_name = f"build-go-app_{args.test_run_id}"
++    version = build_artifact_version(
++        args.target_version,
++        args.workflow_run_number,
++        args.workflow_run_attempt,
++    )
++    normalized_target_version = normalize_target_version(args.target_version)
++    version_file_value = read_version_file(root)
++
++    failure_reasons: list[str] = []
++    if not version:
++        failure_reasons.append("target_version is missing; build_artifact_version cannot be generated")
++    if not version_file_value:
++        failure_reasons.append("VERSION file is missing or empty")
++    elif not SEMVER_PATTERN.match(version_file_value):
++        failure_reasons.append(f"VERSION must be X.Y.Z. actual={version_file_value}")
++    elif version_file_value != normalized_target_version:
++        failure_reasons.append(
++            "VERSION does not match target_version. "
++            f"VERSION={version_file_value} target_version={args.target_version}"
++        )
++
++    go_version_result = run_command(["go", "version"], cwd=app_dir, log_path=logs_dir / "go-version.log")
++    go_version = go_version_result["stdout"].strip()
++    if go_version_result["returncode"] != 0:
++        failure_reasons.append(f"go version exited with rc={go_version_result['returncode']}")
++
++    binary_path = build_dir / BINARY_NAME
++    build_result: dict[str, Any] = {
++        "command": [],
++        "returncode": 1,
++        "log_path": "logs/go-build.log",
++    }
++    if not failure_reasons:
++        build_result = run_command(
++            [
++                "go",
++                "build",
++                "-trimpath",
++                "-ldflags",
++                f"-s -w -X main.version={version}",
++                "-o",
++                str(binary_path),
++                ".",
++            ],
++            cwd=app_dir,
++            log_path=logs_dir / "go-build.log",
++            env=env_with({"CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": "amd64"}),
++        )
++        if build_result["returncode"] != 0:
++            failure_reasons.append(f"go build exited with rc={build_result['returncode']}")
++    else:
++        (logs_dir / "go-build.log").write_text(
++            "go build was not executed because build prerequisites were not met.\n",
++            encoding="utf-8",
++        )
++
++    binary_sha256 = ""
++    if binary_path.exists():
++        try:
++            binary_path.chmod(binary_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
++        except OSError:
++            pass
++        binary_sha256 = sha256_file(binary_path)
++        (build_dir / f"{BINARY_NAME}.sha256").write_text(
++            f"{binary_sha256}  {BINARY_NAME}\n",
++            encoding="utf-8",
++        )
++    elif not any("go build exited" in reason for reason in failure_reasons):
++        failure_reasons.append(f"{BINARY_NAME} was not created")
++
++    build_package_result = bool_to_result(not failure_reasons)
++    build_manifest = {
++        "test_run_id": args.test_run_id,
++        "issue_number": args.issue_number,
++        "target_version": args.target_version,
++        "version_file": version_file_value,
++        "required_final_stage": args.required_final_stage,
++        "build_artifact_version": version,
++        "repository": args.repository,
++        "pr_number": args.pr_number,
++        "head_ref": args.pr_head_ref,
++        "head_sha": args.pr_head_sha,
++        "workflow_run_id": args.workflow_run_id,
++        "workflow_run_attempt": args.workflow_run_attempt,
++        "go_version": go_version,
++        "binary_name": BINARY_NAME,
++        "binary_sha256": binary_sha256,
++        "created_at": created_at,
++        "artifact_name": build_artifact_name,
++        "artifact_scope": "ms3_temporary_pr_ci",
++        "version_check": {
++            "normalized_target_version": normalized_target_version,
++            "version_file": version_file_value,
++            "result": "success"
++            if version_file_value
++            and SEMVER_PATTERN.match(version_file_value)
++            and version_file_value == normalized_target_version
++            else "failure",
++        },
++    }
++    write_json(build_dir / "manifest.json", build_manifest)
++
++    result_payload = {
++        "build_package_result": build_package_result,
++        "failure_reasons": failure_reasons,
++        "go_version": go_version,
++        "build_command": build_result["command"],
++        "build_returncode": build_result["returncode"],
++        "build_log_path": "logs/go-build.log",
++        "build_artifact_name": build_artifact_name,
++        "build_artifact_version": version,
++        "version_file": version_file_value,
++        "normalized_target_version": normalized_target_version,
++        "binary_name": BINARY_NAME,
++        "binary_sha256": binary_sha256,
++        "build_manifest": "build-artifact/manifest.json",
++    }
++
++    expected_evidence = [
++        "manifest.json",
++        "summary.md",
++        "build-package-result.json",
++        "logs/go-version.log",
++        "logs/go-build.log",
++    ]
++    write_json(evidence_dir / "build-package-result.json", result_payload)
++    collected_evidence = relative_existing_files(evidence_dir, expected_evidence)
++    for generated_file in ("manifest.json", "summary.md"):
++        if generated_file not in collected_evidence:
++            collected_evidence.append(generated_file)
++    evidence_manifest = common_evidence_manifest(
++        test_run_id=args.test_run_id,
++        workflow_run_id=args.workflow_run_id,
++        workflow_run_attempt=args.workflow_run_attempt,
++        job_name=args.job_name,
++        pr_number=args.pr_number,
++        issue_number=args.issue_number,
++        pr_head_sha=args.pr_head_sha,
++        repository=args.repository,
++        artifact_name=evidence_artifact_name,
++        generated_timestamp=created_at,
++        expected_evidence=expected_evidence,
++        collected_evidence=collected_evidence,
++        result=build_package_result,
++        target_version=args.target_version,
++        required_final_stage=args.required_final_stage,
++    )
++    write_json(evidence_dir / "manifest.json", evidence_manifest)
++    summary = build_summary(evidence_manifest=evidence_manifest, result_payload=result_payload)
++    (evidence_dir / "summary.md").write_text(summary, encoding="utf-8")
++
++    write_github_output(
++        args.github_output,
++        {
++            "build_package_result": build_package_result,
++            "build_artifact_name": build_artifact_name,
++            "build_artifact_version": version,
++            "build_artifact_checksum": binary_sha256,
++            "evidence_artifact_name": evidence_artifact_name,
++            "failure_reason_count": len(failure_reasons),
++        },
++    )
++    append_step_summary(args.github_step_summary, summary)
++    print(summary)
++    return 0 if build_package_result == "success" else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv[1:]))
+diff --git a/scripts/pr-ci/pr_ci_common.py b/scripts/pr-ci/pr_ci_common.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..706b2d73d8cc9f379d45a12852250a987d9f732f
+--- /dev/null
++++ b/scripts/pr-ci/pr_ci_common.py
+@@ -0,0 +1,167 @@
++#!/usr/bin/env python3
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++from __future__ import annotations
++
++import json
++import os
++import subprocess
++from datetime import datetime, timezone
++from pathlib import Path
++from typing import Any
++
++
++def utc_timestamp(value: str | None = None) -> str:
++    if value:
++        return value
++    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
++
++
++def repo_root() -> Path:
++    return Path(__file__).resolve().parents[2]
++
++
++def write_json(path: Path, payload: dict[str, Any]) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(
++        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
++        encoding="utf-8",
++    )
++
++
++def write_github_output(path: str | None, outputs: dict[str, Any]) -> None:
++    if not path:
++        return
++    with open(path, "a", encoding="utf-8") as output_file:
++        for key, value in outputs.items():
++            if isinstance(value, bool):
++                serialized = "true" if value else "false"
++            elif value is None:
++                serialized = ""
++            else:
++                serialized = str(value)
++            output_file.write(f"{key}={serialized}\n")
++
++
++def append_step_summary(path: str | None, summary: str) -> None:
++    if not path:
++        return
++    with open(path, "a", encoding="utf-8") as summary_file:
++        summary_file.write(summary)
++        if not summary.endswith("\n"):
++            summary_file.write("\n")
++
++
++def run_command(
++    args: list[str],
++    *,
++    cwd: Path,
++    log_path: Path,
++    env: dict[str, str] | None = None,
++    append: bool = False,
++) -> dict[str, Any]:
++    log_path.parent.mkdir(parents=True, exist_ok=True)
++    try:
++        completed = subprocess.run(
++            args,
++            cwd=cwd,
++            env=env,
++            text=True,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++            check=False,
++        )
++        returncode = completed.returncode
++        output = completed.stdout or ""
++    except OSError as exc:
++        returncode = 127
++        output = f"ERROR: failed to execute {args[0]}: {exc}\n"
++    serialized = f"$ {' '.join(args)}\n{output}"
++    mode = "a" if append else "w"
++    with log_path.open(mode, encoding="utf-8") as log_file:
++        log_file.write(serialized)
++        if not serialized.endswith("\n"):
++            log_file.write("\n")
++    return {
++        "command": args,
++        "returncode": returncode,
++        "stdout": output,
++        "log_path": log_path.as_posix(),
++    }
++
++
++def git_value(args: list[str], *, cwd: Path) -> str:
++    completed = subprocess.run(
++        ["git", *args],
++        cwd=cwd,
++        text=True,
++        stdout=subprocess.PIPE,
++        stderr=subprocess.DEVNULL,
++        check=False,
++    )
++    if completed.returncode != 0:
++        return ""
++    return completed.stdout.strip()
++
++
++def relative_existing_files(base_dir: Path, expected_paths: list[str]) -> list[str]:
++    collected: list[str] = []
++    for relative_path in expected_paths:
++        candidate = base_dir / relative_path
++        if candidate.exists():
++            collected.append(relative_path)
++    return collected
++
++
++def common_evidence_manifest(
++    *,
++    test_run_id: str,
++    workflow_run_id: str,
++    workflow_run_attempt: str,
++    job_name: str,
++    pr_number: str,
++    issue_number: str,
++    pr_head_sha: str,
++    repository: str,
++    artifact_name: str,
++    generated_timestamp: str,
++    expected_evidence: list[str],
++    collected_evidence: list[str],
++    result: str,
++    target_version: str,
++    required_final_stage: str,
++) -> dict[str, Any]:
++    root = repo_root()
++    missing_evidence = [
++        item for item in expected_evidence if item not in set(collected_evidence)
++    ]
++    return {
++        "test_run_id": test_run_id,
++        "workflow_run_id": workflow_run_id,
++        "workflow_run_attempt": workflow_run_attempt,
++        "job_name": job_name,
++        "pull_request_number": pr_number,
++        "issue_number_or_UNLINKED": issue_number,
++        "pr_head_sha": pr_head_sha,
++        "tested_git_tree_sha": git_value(["rev-parse", "HEAD^{tree}"], cwd=root),
++        "repository": repository,
++        "target_version": target_version,
++        "required_final_stage": required_final_stage,
++        "generated_timestamp": generated_timestamp,
++        "artifact_name": artifact_name,
++        "retention_days": 30,
++        "expected_evidence": expected_evidence,
++        "collected_evidence": collected_evidence,
++        "missing_evidence": missing_evidence,
++        "result": result,
++    }
++
++
++def bool_to_result(value: bool) -> str:
++    return "success" if value else "failure"
++
++
++def env_with(overrides: dict[str, str]) -> dict[str, str]:
++    env = os.environ.copy()
++    env.update(overrides)
++    return env
+diff --git a/scripts/pr-ci/static_analysis.py b/scripts/pr-ci/static_analysis.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..06a789abb944c9c7c5cde50a0bb798bc4b87a452
+--- /dev/null
++++ b/scripts/pr-ci/static_analysis.py
+@@ -0,0 +1,194 @@
++#!/usr/bin/env python3
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++from __future__ import annotations
++
++import argparse
++import sys
++from pathlib import Path
++from typing import Any
++
++from pr_ci_common import (
++    append_step_summary,
++    bool_to_result,
++    common_evidence_manifest,
++    relative_existing_files,
++    repo_root,
++    run_command,
++    utc_timestamp,
++    write_github_output,
++    write_json,
++)
++
++
++def classify_gofmt(returncode: int, stdout: str) -> tuple[str, list[str]]:
++    reasons: list[str] = []
++    unformatted = (
++        [line.strip() for line in stdout.splitlines() if line.strip()]
++        if returncode == 0
++        else []
++    )
++    if returncode != 0:
++        reasons.append(f"gofmt -l exited with rc={returncode}")
++    if unformatted:
++        reasons.append("gofmt is required for: " + ", ".join(unformatted))
++    return bool_to_result(not reasons), reasons
++
++
++def classify_returncode(tool_name: str, returncode: int) -> tuple[str, list[str]]:
++    if returncode == 0:
++        return "success", []
++    return "failure", [f"{tool_name} exited with rc={returncode}"]
++
++
++def build_summary(
++    *,
++    manifest: dict[str, Any],
++    result_payload: dict[str, Any],
++) -> str:
++    reasons = result_payload["failure_reasons"] or ["なし"]
++    reason_lines = "\n".join(f"- {reason}" for reason in reasons)
++    return "\n".join(
++        [
++            "# static-analysis Summary",
++            "",
++            "| Item | Value |",
++            "|---|---|",
++            f"| Result | `{result_payload['static_analysis_result']}` |",
++            f"| Test run ID | `{manifest['test_run_id']}` |",
++            f"| Pull Request | `#{manifest['pull_request_number']}` |",
++            f"| Head SHA | `{manifest['pr_head_sha']}` |",
++            f"| Issue | `{manifest['issue_number_or_UNLINKED']}` |",
++            f"| target_version | `{manifest['target_version'] or '<missing>'}` |",
++            f"| required_final_stage | `{manifest['required_final_stage'] or '<missing>'}` |",
++            f"| Evidence Artifact | `{manifest['artifact_name']}` |",
++            f"| gofmt | `{result_payload['checks']['gofmt']['result']}` |",
++            f"| go vet | `{result_payload['checks']['go_vet']['result']}` |",
++            "",
++            "## Failure reasons",
++            "",
++            reason_lines,
++            "",
++        ]
++    )
++
++
++def parse_args(argv: list[str]) -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description="Run the Lesson 5.3 Go app static analysis.")
++    parser.add_argument("--output-dir", required=True)
++    parser.add_argument("--repository", required=True)
++    parser.add_argument("--workflow-run-id", required=True)
++    parser.add_argument("--workflow-run-attempt", required=True)
++    parser.add_argument("--job-name", default="static-analysis")
++    parser.add_argument("--test-run-id", required=True)
++    parser.add_argument("--issue-number", required=True)
++    parser.add_argument("--target-version", required=True)
++    parser.add_argument("--required-final-stage", required=True)
++    parser.add_argument("--pr-number", required=True)
++    parser.add_argument("--pr-head-sha", required=True)
++    parser.add_argument("--github-output")
++    parser.add_argument("--github-step-summary")
++    parser.add_argument("--created-at")
++    return parser.parse_args(argv)
++
++
++def main(argv: list[str]) -> int:
++    args = parse_args(argv)
++    root = repo_root()
++    app_dir = root / "app"
++    output_dir = Path(args.output_dir)
++    output_dir.mkdir(parents=True, exist_ok=True)
++    logs_dir = output_dir / "logs"
++    created_at = utc_timestamp(args.created_at)
++    artifact_name = f"evidence-static-analysis_{args.test_run_id}"
++
++    gofmt = run_command(["gofmt", "-l", "."], cwd=app_dir, log_path=logs_dir / "gofmt.log")
++    gofmt_result, gofmt_reasons = classify_gofmt(gofmt["returncode"], gofmt["stdout"])
++    unformatted_files = (
++        [line.strip() for line in gofmt["stdout"].splitlines() if line.strip()]
++        if gofmt["returncode"] == 0
++        else []
++    )
++    gofmt_diff = None
++    if unformatted_files:
++        gofmt_diff = run_command(
++            ["gofmt", "-d", "."],
++            cwd=app_dir,
++            log_path=logs_dir / "gofmt.log",
++            append=True,
++        )
++
++    go_vet = run_command(["go", "vet", "./..."], cwd=app_dir, log_path=logs_dir / "go-vet.log")
++    go_vet_result, go_vet_reasons = classify_returncode("go vet ./...", go_vet["returncode"])
++
++    failure_reasons = [*gofmt_reasons, *go_vet_reasons]
++    static_analysis_result = bool_to_result(not failure_reasons)
++
++    result_payload = {
++        "static_analysis_result": static_analysis_result,
++        "failure_reasons": failure_reasons,
++        "checks": {
++            "gofmt": {
++                "result": gofmt_result,
++                "returncode": gofmt["returncode"],
++                "log_path": "logs/gofmt.log",
++                "unformatted_files": unformatted_files,
++                "diff_generated": gofmt_diff is not None,
++                "diff_returncode": gofmt_diff["returncode"] if gofmt_diff else None,
++            },
++            "go_vet": {
++                "result": go_vet_result,
++                "returncode": go_vet["returncode"],
++                "log_path": "logs/go-vet.log",
++            },
++        },
++    }
++
++    expected_evidence = [
++        "manifest.json",
++        "summary.md",
++        "static-analysis-result.json",
++        "logs/gofmt.log",
++        "logs/go-vet.log",
++    ]
++    write_json(output_dir / "static-analysis-result.json", result_payload)
++    collected_evidence = relative_existing_files(output_dir, expected_evidence)
++    for generated_file in ("manifest.json", "summary.md"):
++        if generated_file not in collected_evidence:
++            collected_evidence.append(generated_file)
++    manifest = common_evidence_manifest(
++        test_run_id=args.test_run_id,
++        workflow_run_id=args.workflow_run_id,
++        workflow_run_attempt=args.workflow_run_attempt,
++        job_name=args.job_name,
++        pr_number=args.pr_number,
++        issue_number=args.issue_number,
++        pr_head_sha=args.pr_head_sha,
++        repository=args.repository,
++        artifact_name=artifact_name,
++        generated_timestamp=created_at,
++        expected_evidence=expected_evidence,
++        collected_evidence=collected_evidence,
++        result=static_analysis_result,
++        target_version=args.target_version,
++        required_final_stage=args.required_final_stage,
++    )
++    write_json(output_dir / "manifest.json", manifest)
++    summary = build_summary(manifest=manifest, result_payload=result_payload)
++    (output_dir / "summary.md").write_text(summary, encoding="utf-8")
++
++    write_github_output(
++        args.github_output,
++        {
++            "static_analysis_result": static_analysis_result,
++            "evidence_artifact_name": artifact_name,
++            "failure_reason_count": len(failure_reasons),
++        },
++    )
++    append_step_summary(args.github_step_summary, summary)
++    print(summary)
++    return 0 if static_analysis_result == "success" else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv[1:]))
+diff --git a/scripts/pr-ci/unit_test.py b/scripts/pr-ci/unit_test.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3b9875d0883810297b3908a04d11889b5b1f4d96
+--- /dev/null
++++ b/scripts/pr-ci/unit_test.py
+@@ -0,0 +1,160 @@
++#!/usr/bin/env python3
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++from __future__ import annotations
++
++import argparse
++import sys
++from pathlib import Path
++from typing import Any
++
++from pr_ci_common import (
++    append_step_summary,
++    bool_to_result,
++    common_evidence_manifest,
++    relative_existing_files,
++    repo_root,
++    run_command,
++    utc_timestamp,
++    write_github_output,
++    write_json,
++)
++
++
++def build_summary(*, manifest: dict[str, Any], result_payload: dict[str, Any]) -> str:
++    reasons = result_payload["failure_reasons"] or ["なし"]
++    reason_lines = "\n".join(f"- {reason}" for reason in reasons)
++    return "\n".join(
++        [
++            "# unit-test Summary",
++            "",
++            "| Item | Value |",
++            "|---|---|",
++            f"| Result | `{result_payload['unit_test_result']}` |",
++            f"| Test run ID | `{manifest['test_run_id']}` |",
++            f"| Pull Request | `#{manifest['pull_request_number']}` |",
++            f"| Head SHA | `{manifest['pr_head_sha']}` |",
++            f"| Issue | `{manifest['issue_number_or_UNLINKED']}` |",
++            f"| target_version | `{manifest['target_version'] or '<missing>'}` |",
++            f"| required_final_stage | `{manifest['required_final_stage'] or '<missing>'}` |",
++            f"| Evidence Artifact | `{manifest['artifact_name']}` |",
++            f"| JUnit XML | `{result_payload['junit_xml']}` |",
++            "",
++            "## Failure reasons",
++            "",
++            reason_lines,
++            "",
++        ]
++    )
++
++
++def parse_args(argv: list[str]) -> argparse.Namespace:
++    parser = argparse.ArgumentParser(description="Run the Lesson 5.3 Go unit tests.")
++    parser.add_argument("--output-dir", required=True)
++    parser.add_argument("--repository", required=True)
++    parser.add_argument("--workflow-run-id", required=True)
++    parser.add_argument("--workflow-run-attempt", required=True)
++    parser.add_argument("--job-name", default="unit-test")
++    parser.add_argument("--test-run-id", required=True)
++    parser.add_argument("--issue-number", required=True)
++    parser.add_argument("--target-version", required=True)
++    parser.add_argument("--required-final-stage", required=True)
++    parser.add_argument("--pr-number", required=True)
++    parser.add_argument("--pr-head-sha", required=True)
++    parser.add_argument("--github-output")
++    parser.add_argument("--github-step-summary")
++    parser.add_argument("--created-at")
++    return parser.parse_args(argv)
++
++
++def main(argv: list[str]) -> int:
++    args = parse_args(argv)
++    root = repo_root()
++    app_dir = root / "app"
++    output_dir = Path(args.output_dir)
++    junit_dir = output_dir / "junit"
++    logs_dir = output_dir / "logs"
++    junit_dir.mkdir(parents=True, exist_ok=True)
++    logs_dir.mkdir(parents=True, exist_ok=True)
++    junit_path = junit_dir / "go-unit.xml"
++    created_at = utc_timestamp(args.created_at)
++    artifact_name = f"evidence-unit-test_{args.test_run_id}"
++
++    command_result = run_command(
++        [
++            "gotestsum",
++            "--junitfile",
++            str(junit_path),
++            "--format",
++            "standard-verbose",
++            "--",
++            "./...",
++        ],
++        cwd=app_dir,
++        log_path=logs_dir / "go-test.log",
++    )
++
++    failure_reasons: list[str] = []
++    if command_result["returncode"] != 0:
++        failure_reasons.append(f"gotestsum exited with rc={command_result['returncode']}")
++    if not junit_path.exists():
++        failure_reasons.append("JUnit XML was not created at junit/go-unit.xml")
++
++    unit_test_result = bool_to_result(not failure_reasons)
++    result_payload = {
++        "unit_test_result": unit_test_result,
++        "failure_reasons": failure_reasons,
++        "command": command_result["command"],
++        "returncode": command_result["returncode"],
++        "log_path": "logs/go-test.log",
++        "junit_xml": "junit/go-unit.xml" if junit_path.exists() else "<missing>",
++    }
++
++    expected_evidence = [
++        "manifest.json",
++        "summary.md",
++        "unit-test-result.json",
++        "logs/go-test.log",
++        "junit/go-unit.xml",
++    ]
++    write_json(output_dir / "unit-test-result.json", result_payload)
++    collected_evidence = relative_existing_files(output_dir, expected_evidence)
++    for generated_file in ("manifest.json", "summary.md"):
++        if generated_file not in collected_evidence:
++            collected_evidence.append(generated_file)
++    manifest = common_evidence_manifest(
++        test_run_id=args.test_run_id,
++        workflow_run_id=args.workflow_run_id,
++        workflow_run_attempt=args.workflow_run_attempt,
++        job_name=args.job_name,
++        pr_number=args.pr_number,
++        issue_number=args.issue_number,
++        pr_head_sha=args.pr_head_sha,
++        repository=args.repository,
++        artifact_name=artifact_name,
++        generated_timestamp=created_at,
++        expected_evidence=expected_evidence,
++        collected_evidence=collected_evidence,
++        result=unit_test_result,
++        target_version=args.target_version,
++        required_final_stage=args.required_final_stage,
++    )
++    write_json(output_dir / "manifest.json", manifest)
++    summary = build_summary(manifest=manifest, result_payload=result_payload)
++    (output_dir / "summary.md").write_text(summary, encoding="utf-8")
++
++    write_github_output(
++        args.github_output,
++        {
++            "unit_test_result": unit_test_result,
++            "evidence_artifact_name": artifact_name,
++            "failure_reason_count": len(failure_reasons),
++        },
++    )
++    append_step_summary(args.github_step_summary, summary)
++    print(summary)
++    return 0 if unit_test_result == "success" else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv[1:]))
+diff --git a/tests/pr-ci/test_build_package.py b/tests/pr-ci/test_build_package.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..77f0482965ac2417e557f6f4ba209fdabdb84437
+--- /dev/null
++++ b/tests/pr-ci/test_build_package.py
+@@ -0,0 +1,31 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++import importlib.util
++import sys
++from pathlib import Path
++
++
++SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts" / "pr-ci"
++sys.path.insert(0, str(SCRIPT_DIR))
++MODULE_PATH = SCRIPT_DIR / "build_package.py"
++SPEC = importlib.util.spec_from_file_location("build_package", MODULE_PATH)
++build_package = importlib.util.module_from_spec(SPEC)
++assert SPEC.loader is not None
++SPEC.loader.exec_module(build_package)
++
++
++def test_normalize_target_version_removes_leading_v():
++    assert build_package.normalize_target_version("v0.1.0") == "0.1.0"
++    assert build_package.normalize_target_version("0.1.0") == "0.1.0"
++
++
++def test_build_artifact_version_uses_run_number_and_attempt():
++    assert (
++        build_package.build_artifact_version("v0.1.0", "12", "2")
++        == "v0.1.0+b.12.a.2"
++    )
++
++
++def test_semver_pattern_accepts_x_y_z_only():
++    assert build_package.SEMVER_PATTERN.match("0.1.0")
++    assert not build_package.SEMVER_PATTERN.match("v0.1.0")
+diff --git a/tests/pr-ci/test_static_analysis.py b/tests/pr-ci/test_static_analysis.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..759991d4a423d887219fc45a4c0bf3bbd345759c
+--- /dev/null
++++ b/tests/pr-ci/test_static_analysis.py
+@@ -0,0 +1,206 @@
++# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
++
++import importlib.util
++import json
++import sys
++from pathlib import Path
++
++
++SCRIPT_DIR = Path(__file__).resolve().parents[2] / "scripts" / "pr-ci"
++sys.path.insert(0, str(SCRIPT_DIR))
++import pr_ci_common
++
++MODULE_PATH = SCRIPT_DIR / "static_analysis.py"
++SPEC = importlib.util.spec_from_file_location("static_analysis", MODULE_PATH)
++static_analysis = importlib.util.module_from_spec(SPEC)
++assert SPEC.loader is not None
++SPEC.loader.exec_module(static_analysis)
++
++
++def test_classify_gofmt_success_when_no_output():
++    result, reasons = static_analysis.classify_gofmt(0, "")
++
++    assert result == "success"
++    assert reasons == []
++
++
++def test_classify_gofmt_failure_when_files_are_listed():
++    result, reasons = static_analysis.classify_gofmt(0, "main.go\n")
++
++    assert result == "failure"
++    assert "main.go" in reasons[0]
++
++
++def test_classify_gofmt_command_error_does_not_treat_diagnostics_as_file_names():
++    result, reasons = static_analysis.classify_gofmt(127, "ERROR: gofmt is unavailable\n")
++
++    assert result == "failure"
++    assert reasons == ["gofmt -l exited with rc=127"]
++
++
++def test_common_run_command_appends_diagnostics_with_command_headers(tmp_path):
++    log_path = tmp_path / "command.log"
++
++    pr_ci_common.run_command(
++        [sys.executable, "-c", "print('first')"],
++        cwd=tmp_path,
++        log_path=log_path,
++    )
++    pr_ci_common.run_command(
++        [sys.executable, "-c", "print('second')"],
++        cwd=tmp_path,
++        log_path=log_path,
++        append=True,
++    )
++
++    log = log_path.read_text(encoding="utf-8")
++    assert log.count("$ ") == 2
++    assert "first" in log
++    assert "second" in log
++
++
++def test_static_analysis_adds_gofmt_diff_without_polluting_file_list(tmp_path, monkeypatch):
++    app_dir = tmp_path / "app"
++    app_dir.mkdir()
++    (app_dir / "go.mod").write_text(
++        "module example.com/issue40-static-analysis\n\ngo 1.26.0\n",
++        encoding="utf-8",
++    )
++    (app_dir / "main.go").write_text("package main\nfunc main(){println(\"x\")}\n", encoding="utf-8")
++    output_dir = tmp_path / "evidence"
++    def fake_run_command(args, **kwargs):
++        log_path = kwargs["log_path"]
++        log_path.parent.mkdir(parents=True, exist_ok=True)
++        if args == ["gofmt", "-l", "."]:
++            output = "main.go\n"
++        elif args == ["gofmt", "-d", "."]:
++            output = (
++                "diff main.go.orig main.go\n"
++                "--- main.go.orig\n"
++                "+++ main.go\n"
++                "@@ -1,2 +1,5 @@\n"
++                " package main\n"
++                "-func main(){println(\"x\")}\n"
++                "+func main() {\n"
++                "+\tprintln(\"x\")\n"
++                "+}\n"
++            )
++        else:
++            output = ""
++        mode = "a" if kwargs.get("append") else "w"
++        with log_path.open(mode, encoding="utf-8") as log_file:
++            log_file.write(f"$ {' '.join(args)}\n{output}")
++        return {"returncode": 0, "stdout": output, "log_path": log_path.as_posix()}
++
++    monkeypatch.setattr(static_analysis, "run_command", fake_run_command)
++    monkeypatch.setattr(pr_ci_common, "repo_root", lambda: tmp_path)
++    monkeypatch.setattr(pr_ci_common, "git_value", lambda args, *, cwd: "test-git-value")
++    original_repo_root = static_analysis.repo_root
++    static_analysis.repo_root = lambda: tmp_path
++    try:
++        rc = static_analysis.main(
++            [
++                "--output-dir",
++                str(output_dir),
++                "--repository",
++                "RanamicusTechnology/11-env-hands-on",
++                "--workflow-run-id",
++                "100",
++                "--workflow-run-attempt",
++                "1",
++                "--test-run-id",
++                "TR-UT-ISSUE-40-100-A1",
++                "--issue-number",
++                "40",
++                "--target-version",
++                "0.0.0",
++                "--required-final-stage",
++                "UT",
++                "--pr-number",
++                "41",
++                "--pr-head-sha",
++                "abc123",
++                "--created-at",
++                "2026-08-03T00:00:00Z",
++            ]
++        )
++    finally:
++        static_analysis.repo_root = original_repo_root
++
++    assert rc == 1
++    assert (app_dir / "main.go").read_text(encoding="utf-8") == (
++        "package main\nfunc main(){println(\"x\")}\n"
++    )
++    payload = json.loads(
++        (output_dir / "static-analysis-result.json").read_text(encoding="utf-8")
++    )
++    assert "iac_lint" not in payload["checks"]
++    assert payload["checks"]["gofmt"]["unformatted_files"] == ["main.go"]
++    assert payload["checks"]["gofmt"]["diff_generated"] is True
++    log = (output_dir / "logs" / "gofmt.log").read_text(encoding="utf-8")
++    assert "$ gofmt -l ." in log
++    assert "$ gofmt -d ." in log
++    assert "main.go" in log
++    assert "@@" in log
++    assert "func main(){println" in log
++    assert "func main() {" in log
++
++
++def test_static_analysis_does_not_run_gofmt_diff_for_formatted_source(tmp_path, monkeypatch):
++    app_dir = tmp_path / "app"
++    app_dir.mkdir()
++    (app_dir / "go.mod").write_text(
++        "module example.com/issue40-static-analysis\n\ngo 1.26.0\n",
++        encoding="utf-8",
++    )
++    (app_dir / "main.go").write_bytes(
++        b'package main\n\nfunc main() {\n\tprintln("x")\n}\n'
++    )
++    output_dir = tmp_path / "evidence"
++    def fake_run_command(args, **kwargs):
++        log_path = kwargs["log_path"]
++        log_path.parent.mkdir(parents=True, exist_ok=True)
++        log_path.write_text(f"$ {' '.join(args)}\n", encoding="utf-8")
++        return {"returncode": 0, "stdout": "", "log_path": log_path.as_posix()}
++
++    monkeypatch.setattr(static_analysis, "run_command", fake_run_command)
++    monkeypatch.setattr(pr_ci_common, "repo_root", lambda: tmp_path)
++    monkeypatch.setattr(pr_ci_common, "git_value", lambda args, *, cwd: "test-git-value")
++    original_repo_root = static_analysis.repo_root
++    static_analysis.repo_root = lambda: tmp_path
++    try:
++        rc = static_analysis.main(
++            [
++                "--output-dir",
++                str(output_dir),
++                "--repository",
++                "RanamicusTechnology/11-env-hands-on",
++                "--workflow-run-id",
++                "100",
++                "--workflow-run-attempt",
++                "1",
++                "--test-run-id",
++                "TR-UT-ISSUE-40-100-A1",
++                "--issue-number",
++                "40",
++                "--target-version",
++                "0.0.0",
++                "--required-final-stage",
++                "UT",
++                "--pr-number",
++                "41",
++                "--pr-head-sha",
++                "abc123",
++            ]
++        )
++    finally:
++        static_analysis.repo_root = original_repo_root
++
++    assert rc == 0
++    payload = json.loads(
++        (output_dir / "static-analysis-result.json").read_text(encoding="utf-8")
++    )
++    assert payload["checks"]["gofmt"]["diff_generated"] is False
++    assert "$ gofmt -d ." not in (
++        output_dir / "logs" / "gofmt.log"
++    ).read_text(encoding="utf-8")

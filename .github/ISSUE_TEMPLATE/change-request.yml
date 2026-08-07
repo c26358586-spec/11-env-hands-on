@@ -1,0 +1,83 @@
+# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
+
+name: 変更要求
+description: ハンズオンで扱う変更要求を記録します。
+title: "[Change]: "
+labels:
+  - change-request
+body:
+  - type: markdown
+    attributes:
+      value: |
+        変更要求、受入条件、変更対象、`target_version`、`required_final_stage`を記録します。
+        Test run ID、Build Artifact ID、candidate IDなどの実行時情報はworkflowが生成します。
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 変更の目的
+      description: なぜこの変更が必要かを記載してください。
+      placeholder: 例：/healthレスポンスへversionを含め、リリース候補の追跡性を高める。
+    validations:
+      required: true
+
+  - type: textarea
+    id: change_summary
+    attributes:
+      label: 変更内容
+      description: 実施する変更の概要を記載してください。
+      placeholder: 例：Go API、テスト、関連ドキュメントを更新する。
+    validations:
+      required: true
+
+  - type: textarea
+    id: affected_resources
+    attributes:
+      label: 変更対象
+      description: 変更する予定のアプリ、IaC、テスト、文書などを記載してください。
+      placeholder: |
+        - app/
+        - tests/
+        - docs/lessons/
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: 想定するテスト段階と受入条件
+      description: UTで確認する内容を箇条書きで記載してください。
+      placeholder: |
+        - PR CIのgovernance-checkが成功する
+        - required_final_stageはUTである
+    validations:
+      required: true
+
+  - type: input
+    id: target_version
+    attributes:
+      label: target_version
+      description: 変更で目標とする教材成果物のバージョンをX.Y.Z形式で記載してください。
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: required_final_stage
+    attributes:
+      label: required_final_stage
+      description: このハンズオンではUTを選択します。
+      options:
+        - UT
+      default: 0
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: 補足・制約
+      description: 注意点、対象外、制約があれば記載してください。
+      placeholder: 例：文書更新だけを対象とし、アプリケーションコードは変更しない。
+    validations:
+      required: false

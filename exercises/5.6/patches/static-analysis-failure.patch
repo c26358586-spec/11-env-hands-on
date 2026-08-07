@@ -1,0 +1,12 @@
+diff --git a/VERSION b/VERSION
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.0.0
++0.0.1
+diff --git a/app/health.go b/app/health.go
+--- a/app/health.go
++++ b/app/health.go
+@@ -26 +26 @@
+-		Status:  "ok",
++		Status:"ok",

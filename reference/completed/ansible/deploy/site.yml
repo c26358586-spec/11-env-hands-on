@@ -1,0 +1,8 @@
+---
+# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
+
+- name: Deploy the course Go application artifact
+  hosts: ms1_target
+  gather_facts: false
+  roles:
+    - role: app

@@ -1,0 +1,12 @@
+diff --git a/VERSION b/VERSION
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.0.0
++0.0.1
+diff --git a/ansible/infra/roles/nginx/tasks/main.yml b/ansible/infra/roles/nginx/tasks/main.yml
+--- a/ansible/infra/roles/nginx/tasks/main.yml
++++ b/ansible/infra/roles/nginx/tasks/main.yml
+@@ -30 +30 @@
+-    state: link
++    state: hard

@@ -1,0 +1,32 @@
+diff --git a/VERSION b/VERSION
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.0.0
++0.0.1
+diff --git a/app/health.go b/app/health.go
+--- a/app/health.go
++++ b/app/health.go
+@@ -18,6 +18,7 @@ type healthResponse struct {
+ func routes() http.Handler {
+ 	mux := http.NewServeMux()
+ 	mux.HandleFunc("/health", healthHandler)
++	mux.HandleFunc("/not-found", healthHandler)
+ 	return mux
+ }
+ 
+diff --git a/ansible/infra/roles/nginx/templates/ms1-app.conf.j2 b/ansible/infra/roles/nginx/templates/ms1-app.conf.j2
+--- a/ansible/infra/roles/nginx/templates/ms1-app.conf.j2
++++ b/ansible/infra/roles/nginx/templates/ms1-app.conf.j2
+@@ -13,4 +13,11 @@ server {
+         proxy_set_header Host $host;
+         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+     }
++
++    location /not-found {
++        proxy_pass http://127.0.0.1:{{ app_port | default(8080) }}/not-found;
++        proxy_http_version 1.1;
++        proxy_set_header Host $host;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++    }
+ }

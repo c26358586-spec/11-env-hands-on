@@ -1,0 +1,14 @@
+diff --git a/VERSION b/VERSION
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-0.0.0
++0.0.1
+diff --git a/app/health_test.go b/app/health_test.go
+--- a/app/health_test.go
++++ b/app/health_test.go
+@@ -21,2 +21,2 @@
+-	if payload.Service != "ms1-go-api" {
+-		t.Fatalf("Service = %q, want ms1-go-api", payload.Service)
++	if payload.Service != "ms1-broken-api" {
++		t.Fatalf("Service = %q, want ms1-broken-api", payload.Service)

@@ -1,0 +1,20 @@
+# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
+
+name: Learning Starter Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  starter-readiness:
+    name: starter-readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Show the next learning step
+        run: |
+          set -Eeuo pipefail
+          echo "Starter workflow is available. Apply the Lesson 5.2 patch before creating a Draft Pull Request."

@@ -1,0 +1,523 @@
+# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
+
+name: PR CI
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  actions: read
+
+jobs:
+  governance-check:
+    name: governance-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      test_run_id: ${{ steps.governance.outputs.test_run_id }}
+      governance_result: ${{ steps.governance.outputs.governance_result }}
+      issue_number: ${{ steps.governance.outputs.issue_number }}
+      target_version: ${{ steps.governance.outputs.target_version }}
+      required_final_stage: ${{ steps.governance.outputs.required_final_stage }}
+      evidence_artifact_name: ${{ steps.governance.outputs.evidence_artifact_name }}
+      evidence_artifact_uploaded: ${{ steps.upload-governance-evidence.outcome == 'success' }}
+      evidence_artifact_id: ${{ steps.upload-governance-evidence.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Run governance check
+        id: governance
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/pr-ci/governance_check.py \
+            --event-path "${GITHUB_EVENT_PATH}" \
+            --output-dir "${RUNNER_TEMP}/pr-ci-governance" \
+            --repository "${{ github.repository }}" \
+            --workflow-name "${{ github.workflow }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --job-name "governance-check" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --github-step-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload governance evidence
+        id: upload-governance-evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.governance.outputs.evidence_artifact_name || format('evidence-governance_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
+          path: ${{ runner.temp }}/pr-ci-governance/
+          if-no-files-found: error
+          retention-days: 30
+
+  static-analysis:
+    name: static-analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - governance-check
+    outputs:
+      static_analysis_result: ${{ steps.static-analysis.outputs.static_analysis_result }}
+      evidence_artifact_name: ${{ steps.static-analysis.outputs.evidence_artifact_name }}
+      evidence_artifact_uploaded: ${{ steps.upload-static-analysis-evidence.outcome == 'success' }}
+      evidence_artifact_id: ${{ steps.upload-static-analysis-evidence.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Go
+        # actions/setup-go v5.5.0
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: "1.26.4"
+
+      - name: Run Go static analysis
+        id: static-analysis
+        continue-on-error: true
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/pr-ci/static_analysis.py \
+            --output-dir "${RUNNER_TEMP}/pr-ci-static-analysis" \
+            --repository "${{ github.repository }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
+            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
+            --target-version "${{ needs.governance-check.outputs.target_version }}" \
+            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --github-step-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload static-analysis evidence
+        id: upload-static-analysis-evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.static-analysis.outputs.evidence_artifact_name || format('evidence-static-analysis_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
+          path: ${{ runner.temp }}/pr-ci-static-analysis/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce static-analysis result
+        if: always()
+        env:
+          STATIC_ANALYSIS_RESULT: ${{ steps.static-analysis.outputs.static_analysis_result }}
+          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-static-analysis-evidence.outcome == 'success' }}
+        run: |
+          set -Eeuo pipefail
+          if [ "${STATIC_ANALYSIS_RESULT:-}" != "success" ]; then
+            echo "ERROR: static-analysis result is ${STATIC_ANALYSIS_RESULT:-<missing>}" >&2
+            exit 1
+          fi
+          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
+            echo "ERROR: static-analysis evidence Artifact upload did not succeed." >&2
+            exit 1
+          fi
+
+  unit-test:
+    name: unit-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - governance-check
+    outputs:
+      unit_test_result: ${{ steps.unit-test.outputs.unit_test_result }}
+      evidence_artifact_name: ${{ steps.unit-test.outputs.evidence_artifact_name }}
+      evidence_artifact_uploaded: ${{ steps.upload-unit-test-evidence.outcome == 'success' }}
+      evidence_artifact_id: ${{ steps.upload-unit-test-evidence.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Go
+        # actions/setup-go v5.5.0
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: "1.26.4"
+
+      - name: Install gotestsum
+        run: |
+          set -Eeuo pipefail
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+          go install gotest.tools/gotestsum@v1.13.0
+
+      - name: Run Go unit tests
+        id: unit-test
+        continue-on-error: true
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/pr-ci/unit_test.py \
+            --output-dir "${RUNNER_TEMP}/pr-ci-unit-test" \
+            --repository "${{ github.repository }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
+            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
+            --target-version "${{ needs.governance-check.outputs.target_version }}" \
+            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --github-step-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload unit-test evidence
+        id: upload-unit-test-evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.unit-test.outputs.evidence_artifact_name || format('evidence-unit-test_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
+          path: ${{ runner.temp }}/pr-ci-unit-test/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce unit-test result
+        if: always()
+        env:
+          UNIT_TEST_RESULT: ${{ steps.unit-test.outputs.unit_test_result }}
+          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-unit-test-evidence.outcome == 'success' }}
+        run: |
+          set -Eeuo pipefail
+          if [ "${UNIT_TEST_RESULT:-}" != "success" ]; then
+            echo "ERROR: unit-test result is ${UNIT_TEST_RESULT:-<missing>}" >&2
+            exit 1
+          fi
+          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
+            echo "ERROR: unit-test evidence Artifact upload did not succeed." >&2
+            exit 1
+          fi
+
+  build-package:
+    name: build-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - governance-check
+      - static-analysis
+      - unit-test
+    outputs:
+      build_package_result: ${{ steps.build-package.outputs.build_package_result }}
+      build_artifact_name: ${{ steps.build-package.outputs.build_artifact_name }}
+      build_artifact_version: ${{ steps.build-package.outputs.build_artifact_version }}
+      build_artifact_checksum: ${{ steps.build-package.outputs.build_artifact_checksum }}
+      build_artifact_uploaded: ${{ steps.upload-build-artifact.outcome == 'success' }}
+      build_artifact_id: ${{ steps.upload-build-artifact.outputs.artifact-id }}
+      evidence_artifact_name: ${{ steps.build-package.outputs.evidence_artifact_name }}
+      evidence_artifact_uploaded: ${{ steps.upload-build-package-evidence.outcome == 'success' }}
+      evidence_artifact_id: ${{ steps.upload-build-package-evidence.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Go
+        # actions/setup-go v5.5.0
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: "1.26.4"
+
+      - name: Build and package Go app
+        id: build-package
+        continue-on-error: true
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/pr-ci/build_package.py \
+            --build-output-dir "${RUNNER_TEMP}/pr-ci-build-artifact" \
+            --evidence-output-dir "${RUNNER_TEMP}/pr-ci-build-package-evidence" \
+            --repository "${{ github.repository }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-number "${{ github.run_number }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
+            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
+            --target-version "${{ needs.governance-check.outputs.target_version }}" \
+            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --pr-head-ref "${{ github.event.pull_request.head.ref }}" \
+            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --github-step-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload Go app Build Artifact
+        id: upload-build-artifact
+        if: always() && steps.build-package.outputs.build_package_result == 'success'
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.build-package.outputs.build_artifact_name }}
+          path: ${{ runner.temp }}/pr-ci-build-artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build-package evidence
+        id: upload-build-package-evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.build-package.outputs.evidence_artifact_name || format('evidence-build-package_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
+          path: ${{ runner.temp }}/pr-ci-build-package-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce build-package result
+        if: always()
+        env:
+          BUILD_PACKAGE_RESULT: ${{ steps.build-package.outputs.build_package_result }}
+          BUILD_ARTIFACT_UPLOADED: ${{ steps.upload-build-artifact.outcome == 'success' }}
+          BUILD_ARTIFACT_CHECKSUM: ${{ steps.build-package.outputs.build_artifact_checksum }}
+          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-build-package-evidence.outcome == 'success' }}
+        run: |
+          set -Eeuo pipefail
+          if [ "${BUILD_PACKAGE_RESULT:-}" != "success" ]; then
+            echo "ERROR: build-package result is ${BUILD_PACKAGE_RESULT:-<missing>}" >&2
+            exit 1
+          fi
+          if [ "${BUILD_ARTIFACT_UPLOADED}" != "true" ]; then
+            echo "ERROR: Build Artifact upload did not succeed." >&2
+            exit 1
+          fi
+          if [ -z "${BUILD_ARTIFACT_CHECKSUM:-}" ]; then
+            echo "ERROR: Build Artifact checksum is missing." >&2
+            exit 1
+          fi
+          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
+            echo "ERROR: build-package evidence Artifact upload did not succeed." >&2
+            exit 1
+          fi
+
+  environment-lifecycle:
+    name: environment-lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - governance-check
+      - static-analysis
+      - unit-test
+      - build-package
+    if: always()
+    outputs:
+      environment_lifecycle_result: ${{ steps.environment-lifecycle.outputs.environment_lifecycle_result }}
+      environment_evidence_manifest_finalized: ${{ steps.environment-lifecycle.outputs.environment_evidence_manifest_finalized }}
+      environment_face_id: ${{ steps.environment-lifecycle.outputs.environment_face_id }}
+      environment_creation_state: ${{ steps.environment-lifecycle.outputs.environment_creation_state }}
+      readiness_check_execution_state: ${{ steps.environment-lifecycle.outputs.readiness_check_execution_state }}
+      readiness_check_result: ${{ steps.environment-lifecycle.outputs.readiness_check_result }}
+      test_execution_state: ${{ steps.environment-lifecycle.outputs.test_execution_state }}
+      overall_test_result: ${{ steps.environment-lifecycle.outputs.overall_test_result }}
+      test_result: ${{ steps.environment-lifecycle.outputs.test_result }}
+      test_result_alias_of: ${{ steps.environment-lifecycle.outputs.test_result_alias_of }}
+      infrastructure_test_execution_state: ${{ steps.environment-lifecycle.outputs.infrastructure_test_execution_state }}
+      infrastructure_test_result: ${{ steps.environment-lifecycle.outputs.infrastructure_test_result }}
+      api_test_execution_state: ${{ steps.environment-lifecycle.outputs.api_test_execution_state }}
+      api_test_result: ${{ steps.environment-lifecycle.outputs.api_test_result }}
+      cleanup_state: ${{ steps.environment-lifecycle.outputs.cleanup_state }}
+      cleanup_warning: ${{ steps.environment-lifecycle.outputs.cleanup_warning }}
+      cleanup_target_count: ${{ steps.environment-lifecycle.outputs.cleanup_target_count }}
+      remaining_resource_count: ${{ steps.environment-lifecycle.outputs.remaining_resource_count }}
+      missing_evidence_count: ${{ steps.environment-lifecycle.outputs.missing_evidence_count }}
+      environment_evidence_complete: ${{ steps.environment-lifecycle.outputs.environment_evidence_complete }}
+      residue_verification_result: ${{ steps.environment-lifecycle.outputs.residue_verification_result }}
+      evidence_artifact_name: ${{ steps.environment-lifecycle.outputs.evidence_artifact_name }}
+      evidence_artifact_uploaded: ${{ steps.upload-environment-evidence.outcome == 'success' }}
+      evidence_artifact_id: ${{ steps.upload-environment-evidence.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Python
+        if: ${{ needs.governance-check.result == 'success' && needs.static-analysis.result == 'success' && needs.unit-test.result == 'success' && needs.build-package.result == 'success' && needs.build-package.outputs.build_artifact_uploaded == 'true' }}
+        # actions/setup-python v5.6.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12.13"
+
+      - name: Set up Terraform
+        if: ${{ needs.governance-check.result == 'success' && needs.static-analysis.result == 'success' && needs.unit-test.result == 'success' && needs.build-package.result == 'success' && needs.build-package.outputs.build_artifact_uploaded == 'true' }}
+        # hashicorp/setup-terraform v3.1.2
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.14.1"
+          terraform_wrapper: false
+
+      - name: Install environment tool dependencies
+        if: ${{ needs.governance-check.result == 'success' && needs.static-analysis.result == 'success' && needs.unit-test.result == 'success' && needs.build-package.result == 'success' && needs.build-package.outputs.build_artifact_uploaded == 'true' }}
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements/ms1.txt
+
+      - name: Download Go app Build Artifact
+        id: download-build-artifact
+        if: ${{ needs.governance-check.result == 'success' && needs.static-analysis.result == 'success' && needs.unit-test.result == 'success' && needs.build-package.result == 'success' && needs.build-package.outputs.build_artifact_uploaded == 'true' }}
+        # actions/download-artifact v4.3.0
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ needs.build-package.outputs.build_artifact_name }}
+          path: ${{ runner.temp }}/pr-ci-downloaded-build-artifact
+
+      - name: Run environment lifecycle
+        id: environment-lifecycle
+        if: always()
+        continue-on-error: true
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/pr-ci/environment_lifecycle.py \
+            --output-dir "${RUNNER_TEMP}/pr-ci-environment-evidence" \
+            --build-artifact-dir "${RUNNER_TEMP}/pr-ci-downloaded-build-artifact" \
+            --repository "${{ github.repository }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
+            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
+            --target-version "${{ needs.governance-check.outputs.target_version }}" \
+            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
+            --governance-job-result "${{ needs.governance-check.result }}" \
+            --governance-result "${{ needs.governance-check.outputs.governance_result }}" \
+            --static-analysis-job-result "${{ needs.static-analysis.result }}" \
+            --static-analysis-result "${{ needs.static-analysis.outputs.static_analysis_result }}" \
+            --unit-test-job-result "${{ needs.unit-test.result }}" \
+            --unit-test-result "${{ needs.unit-test.outputs.unit_test_result }}" \
+            --build-package-job-result "${{ needs.build-package.result }}" \
+            --build-package-result "${{ needs.build-package.outputs.build_package_result }}" \
+            --build-artifact-name "${{ needs.build-package.outputs.build_artifact_name }}" \
+            --build-artifact-id "${{ needs.build-package.outputs.build_artifact_id }}" \
+            --build-artifact-version "${{ needs.build-package.outputs.build_artifact_version }}" \
+            --build-artifact-checksum "${{ needs.build-package.outputs.build_artifact_checksum }}" \
+            --build-artifact-uploaded "${{ needs.build-package.outputs.build_artifact_uploaded }}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --github-step-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload environment evidence
+        id: upload-environment-evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.environment-lifecycle.outputs.evidence_artifact_name || format('evidence-environment_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
+          path: ${{ runner.temp }}/pr-ci-environment-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce environment lifecycle result
+        if: always()
+        env:
+          ENVIRONMENT_LIFECYCLE_RESULT: ${{ steps.environment-lifecycle.outputs.environment_lifecycle_result }}
+          CLEANUP_STATE: ${{ steps.environment-lifecycle.outputs.cleanup_state }}
+          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-environment-evidence.outcome == 'success' }}
+        run: |
+          set -Eeuo pipefail
+          case "${ENVIRONMENT_LIFECYCLE_RESULT:-}" in
+            success|skipped_prerequisites)
+              ;;
+            *)
+              echo "ERROR: environment-lifecycle result is ${ENVIRONMENT_LIFECYCLE_RESULT:-<missing>}" >&2
+              exit 1
+              ;;
+          esac
+          if [ "${CLEANUP_STATE:-}" = "NotAttempted" ] || [ -z "${CLEANUP_STATE:-}" ]; then
+            echo "ERROR: cleanup_state is ${CLEANUP_STATE:-<missing>}" >&2
+            exit 1
+          fi
+          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
+            echo "ERROR: environment evidence Artifact upload did not succeed." >&2
+            exit 1
+          fi
+
+  pr-ci-gate:
+    name: pr-ci-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - governance-check
+      - static-analysis
+      - unit-test
+      - build-package
+      - environment-lifecycle
+    if: always()
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Evaluate PR CI gate
+        env:
+          GOVERNANCE_JOB_RESULT: ${{ needs.governance-check.result }}
+          STATIC_ANALYSIS_JOB_RESULT: ${{ needs.static-analysis.result }}
+          UNIT_TEST_JOB_RESULT: ${{ needs.unit-test.result }}
+          BUILD_PACKAGE_JOB_RESULT: ${{ needs.build-package.result }}
+          ENVIRONMENT_LIFECYCLE_JOB_RESULT: ${{ needs.environment-lifecycle.result }}
+          TEST_RUN_ID: ${{ needs.governance-check.outputs.test_run_id }}
+          GOVERNANCE_RESULT: ${{ needs.governance-check.outputs.governance_result }}
+          STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.outputs.static_analysis_result }}
+          UNIT_TEST_RESULT: ${{ needs.unit-test.outputs.unit_test_result }}
+          BUILD_PACKAGE_RESULT: ${{ needs.build-package.outputs.build_package_result }}
+          ENVIRONMENT_LIFECYCLE_RESULT: ${{ needs.environment-lifecycle.outputs.environment_lifecycle_result }}
+          ENVIRONMENT_EVIDENCE_MANIFEST_FINALIZED: ${{ needs.environment-lifecycle.outputs.environment_evidence_manifest_finalized }}
+          ENVIRONMENT_CREATION_STATE: ${{ needs.environment-lifecycle.outputs.environment_creation_state }}
+          READINESS_CHECK_EXECUTION_STATE: ${{ needs.environment-lifecycle.outputs.readiness_check_execution_state }}
+          READINESS_CHECK_RESULT: ${{ needs.environment-lifecycle.outputs.readiness_check_result }}
+          INFRASTRUCTURE_TEST_EXECUTION_STATE: ${{ needs.environment-lifecycle.outputs.infrastructure_test_execution_state }}
+          INFRASTRUCTURE_TEST_RESULT: ${{ needs.environment-lifecycle.outputs.infrastructure_test_result }}
+          API_TEST_EXECUTION_STATE: ${{ needs.environment-lifecycle.outputs.api_test_execution_state }}
+          API_TEST_RESULT: ${{ needs.environment-lifecycle.outputs.api_test_result }}
+          OVERALL_TEST_RESULT: ${{ needs.environment-lifecycle.outputs.overall_test_result }}
+          CLEANUP_STATE: ${{ needs.environment-lifecycle.outputs.cleanup_state }}
+          CLEANUP_WARNING: ${{ needs.environment-lifecycle.outputs.cleanup_warning }}
+          REMAINING_RESOURCE_COUNT: ${{ needs.environment-lifecycle.outputs.remaining_resource_count }}
+          MISSING_EVIDENCE_COUNT: ${{ needs.environment-lifecycle.outputs.missing_evidence_count }}
+          ENVIRONMENT_EVIDENCE_COMPLETE: ${{ needs.environment-lifecycle.outputs.environment_evidence_complete }}
+          ISSUE_NUMBER: ${{ needs.governance-check.outputs.issue_number }}
+          TARGET_VERSION: ${{ needs.governance-check.outputs.target_version }}
+          REQUIRED_FINAL_STAGE: ${{ needs.governance-check.outputs.required_final_stage }}
+          GOVERNANCE_EVIDENCE_ARTIFACT_NAME: ${{ needs.governance-check.outputs.evidence_artifact_name }}
+          GOVERNANCE_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.governance-check.outputs.evidence_artifact_uploaded }}
+          GOVERNANCE_EVIDENCE_ARTIFACT_ID: ${{ needs.governance-check.outputs.evidence_artifact_id }}
+          STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME: ${{ needs.static-analysis.outputs.evidence_artifact_name }}
+          STATIC_ANALYSIS_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.static-analysis.outputs.evidence_artifact_uploaded }}
+          STATIC_ANALYSIS_EVIDENCE_ARTIFACT_ID: ${{ needs.static-analysis.outputs.evidence_artifact_id }}
+          UNIT_TEST_EVIDENCE_ARTIFACT_NAME: ${{ needs.unit-test.outputs.evidence_artifact_name }}
+          UNIT_TEST_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.unit-test.outputs.evidence_artifact_uploaded }}
+          UNIT_TEST_EVIDENCE_ARTIFACT_ID: ${{ needs.unit-test.outputs.evidence_artifact_id }}
+          BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME: ${{ needs.build-package.outputs.evidence_artifact_name }}
+          BUILD_PACKAGE_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.build-package.outputs.evidence_artifact_uploaded }}
+          BUILD_PACKAGE_EVIDENCE_ARTIFACT_ID: ${{ needs.build-package.outputs.evidence_artifact_id }}
+          BUILD_ARTIFACT_NAME: ${{ needs.build-package.outputs.build_artifact_name }}
+          BUILD_ARTIFACT_UPLOADED: ${{ needs.build-package.outputs.build_artifact_uploaded }}
+          BUILD_ARTIFACT_ID: ${{ needs.build-package.outputs.build_artifact_id }}
+          BUILD_ARTIFACT_VERSION: ${{ needs.build-package.outputs.build_artifact_version }}
+          BUILD_ARTIFACT_CHECKSUM: ${{ needs.build-package.outputs.build_artifact_checksum }}
+          ENVIRONMENT_EVIDENCE_ARTIFACT_NAME: ${{ needs.environment-lifecycle.outputs.evidence_artifact_name }}
+          ENVIRONMENT_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.environment-lifecycle.outputs.evidence_artifact_uploaded }}
+          ENVIRONMENT_EVIDENCE_ARTIFACT_ID: ${{ needs.environment-lifecycle.outputs.evidence_artifact_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/pr-ci/pr_ci_gate.py \
+            --github-step-summary "${GITHUB_STEP_SUMMARY}"

@@ -1,0 +1,116 @@
+# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
+
+schema_version: "0.1.0"
+lesson: "5.6 品質ゲートと異常系のハンドリング"
+base_version: "0.0.0"
+target_version: "0.0.1"
+required_final_stage: "UT"
+merge_after_success: false
+close_issue_after_exercise: true
+
+scenarios:
+  - id: static-analysis-failure
+    title: "Go静的解析失敗"
+    purpose: "gofmt違反をPR CIの早い段階で検出し、pr-ci-gateがmerge不可にすることを確認する。"
+    patch: exercises/5.6/patches/static-analysis-failure.patch
+    expected_failure_job: static-analysis
+    expected_failure_step: app-lint
+    expected_gate_result: failure
+    expected_observation_points:
+      - "static-analysis jobのSummaryでgofmtがfailureになっていること"
+      - "build-packageがstatic-analysis failureによりskippedになること"
+      - "environment-lifecycleがcleanup target 0とcleanup_state Completedを記録すること"
+      - "pr-ci-gateがstatic-analysis failureを集約すること"
+    evidence_to_check:
+      - "evidence-static-analysis_<test-run-id>/summary.md"
+      - "evidence-static-analysis_<test-run-id>/static-analysis-result.json"
+      - "evidence-static-analysis_<test-run-id>/logs/gofmt.log"
+      - "evidence-environment_<test-run-id>/manifest.json"
+      - "pr-ci-gate Summary"
+    recovery_method: "app/health.goへgofmtを実行して整形する。VERSIONは0.0.1を維持する。"
+    merge_policy: "復旧後にpr-ci-gate successを確認しても、演習用PRはmainへmergeせずcloseする。"
+
+  - id: unit-test-failure
+    title: "Goアプリ単体テスト失敗"
+    purpose: "runner上のGoアプリ単体テスト失敗をJUnit XMLとログから追跡できることを確認する。"
+    patch: exercises/5.6/patches/unit-test-failure.patch
+    expected_failure_job: unit-test
+    expected_failure_step: go-unit-test
+    expected_gate_result: failure
+    expected_observation_points:
+      - "unit-test jobのSummaryでunit_test_resultがfailureになっていること"
+      - "junit/go-unit.xmlに失敗test caseが記録されること"
+      - "build-packageがunit-test failureによりskippedになること"
+      - "pr-ci-gateがunit-test failureを集約すること"
+    evidence_to_check:
+      - "evidence-unit-test_<test-run-id>/junit/go-unit.xml"
+      - "evidence-unit-test_<test-run-id>/logs/go-test.log"
+      - "evidence-unit-test_<test-run-id>/unit-test-result.json"
+      - "evidence-environment_<test-run-id>/manifest.json"
+      - "pr-ci-gate Summary"
+    recovery_method: "app/health_test.goのService期待値をms1-go-apiへ戻す。VERSIONは0.0.1を維持する。"
+    merge_policy: "復旧後にpr-ci-gate successを確認しても、演習用PRはmainへmergeせずcloseする。"
+
+  - id: infrastructure-test-failure
+    title: "正式インフラテスト失敗"
+    purpose: "environment-lifecycle内のTestinfraが、環境構成の不備を検出することを確認する。"
+    patch: exercises/5.6/patches/infrastructure-test-failure.patch
+    expected_failure_job: environment-lifecycle
+    expected_failure_step: infrastructure-test
+    expected_gate_result: failure
+    expected_observation_points:
+      - "infrastructure_test_resultがFailedになること"
+      - "api_test_resultがSkippedになること"
+      - "cleanupとresidue verificationが記録されること"
+      - "pr-ci-gateがinfrastructure_test_result Failedを集約すること"
+    evidence_to_check:
+      - "evidence-environment_<test-run-id>/logs/infrastructure-test.log"
+      - "evidence-environment_<test-run-id>/test-results/infrastructure-test-junit.xml"
+      - "evidence-environment_<test-run-id>/test-results/infrastructure-test-result.json"
+      - "evidence-environment_<test-run-id>/summaries/infrastructure-test-summary.md"
+      - "evidence-environment_<test-run-id>/manifest.json"
+    recovery_method: "Nginx site enableのstateをlinkへ戻す。VERSIONは0.0.1を維持する。"
+    merge_policy: "復旧後にpr-ci-gate successを確認しても、演習用PRはmainへmergeせずcloseする。"
+
+  - id: api-test-failure
+    title: "正式APIテスト失敗"
+    purpose: "正式インフラテストは成功した状態で、API仕様不整合を正式APIテストが検出することを確認する。"
+    patch: exercises/5.6/patches/api-test-failure.patch
+    expected_failure_job: environment-lifecycle
+    expected_failure_step: api-test
+    expected_gate_result: failure
+    expected_observation_points:
+      - "infrastructure_test_resultがPassedになること"
+      - "api_test_resultがFailedになること"
+      - "api-testのJUnit XMLとログから未定義pathの不整合を追えること"
+      - "cleanupとresidue verificationが記録されること"
+    evidence_to_check:
+      - "evidence-environment_<test-run-id>/logs/api-test.log"
+      - "evidence-environment_<test-run-id>/test-results/api-test-junit.xml"
+      - "evidence-environment_<test-run-id>/test-results/api-test-result.json"
+      - "evidence-environment_<test-run-id>/summaries/api-test-summary.md"
+      - "evidence-environment_<test-run-id>/manifest.json"
+    recovery_method: "Goの誤った/not-found routeとNginxの/not-found locationを削除する。VERSIONは0.0.1を維持する。"
+    merge_policy: "復旧後にpr-ci-gate successを確認しても、演習用PRはmainへmergeせずcloseする。"
+
+  - id: test-result-evidence-missing
+    title: "正式テスト証跡欠落"
+    purpose: "正式テストが合格しても、environment evidenceの必須証跡欠落をmissing_evidence_countとenvironment_evidence_completeで検出できることを確認する。"
+    patch: exercises/5.6/patches/test-result-evidence-missing.patch
+    expected_failure_job: pr-ci-gate
+    expected_failure_step: evidence-completeness
+    expected_gate_result: failure
+    expected_observation_points:
+      - "environment-lifecycleでは正式インフラ/APIテスト自体はPassedになり得ること"
+      - "manifest.jsonのmissing_evidenceに欠落pathが記録されること"
+      - "missing_evidence_countが1以上になること"
+      - "environment_evidence_completeがfalseになること"
+      - "pr-ci-gateが証跡欠落をmerge不可理由として集約すること"
+    evidence_to_check:
+      - "evidence-environment_<test-run-id>/manifest.json"
+      - "evidence-environment_<test-run-id>/environment-lifecycle-result.json"
+      - "evidence-environment_<test-run-id>/test-results/api-test-result.json"
+      - "pr-ci-gate Summary"
+      - "欠落対象ファイルの有無"
+    recovery_method: "API test summaryを削除するscenario専用処理だけを除去する。VERSIONは0.0.1を維持する。"
+    merge_policy: "復旧後にpr-ci-gate successを確認しても、演習用PRはmainへmergeせずcloseする。"
