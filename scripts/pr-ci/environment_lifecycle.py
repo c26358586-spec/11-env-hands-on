@@ -988,6 +988,13 @@ def run_pytest_suite(
         junit_analysis=junit_analysis,
         execution_mode="pytest",
     )
+    if test_key == "api":
+        missing_reason = "Lesson 5.6 evidence-missing scenario removed API test summary after generation."
+        summary_file = output_dir / summary_path
+        if summary_file.exists():
+            summary_file.unlink()
+        record_missing_evidence(state, summary_path, missing_reason)
+
     return execution_state, test_result
 
 
