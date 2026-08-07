@@ -64,25 +64,289 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  static-analysis:
+    name: static-analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - governance-check
+    outputs:
+      static_analysis_result: ${{ steps.static-analysis.outputs.static_analysis_result }}
+      evidence_artifact_name: ${{ steps.static-analysis.outputs.evidence_artifact_name }}
+      evidence_artifact_uploaded: ${{ steps.upload-static-analysis-evidence.outcome == 'success' }}
+      evidence_artifact_id: ${{ steps.upload-static-analysis-evidence.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Go
+        # actions/setup-go v5.5.0
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: "1.26.4"
+
+      - name: Run Go static analysis
+        id: static-analysis
+        continue-on-error: true
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/pr-ci/static_analysis.py \
+            --output-dir "${RUNNER_TEMP}/pr-ci-static-analysis" \
+            --repository "${{ github.repository }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
+            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
+            --target-version "${{ needs.governance-check.outputs.target_version }}" \
+            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --github-step-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload static-analysis evidence
+        id: upload-static-analysis-evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.static-analysis.outputs.evidence_artifact_name || format('evidence-static-analysis_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
+          path: ${{ runner.temp }}/pr-ci-static-analysis/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce static-analysis result
+        if: always()
+        env:
+          STATIC_ANALYSIS_RESULT: ${{ steps.static-analysis.outputs.static_analysis_result }}
+          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-static-analysis-evidence.outcome == 'success' }}
+        run: |
+          set -Eeuo pipefail
+          if [ "${STATIC_ANALYSIS_RESULT:-}" != "success" ]; then
+            echo "ERROR: static-analysis result is ${STATIC_ANALYSIS_RESULT:-<missing>}" >&2
+            exit 1
+          fi
+          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
+            echo "ERROR: static-analysis evidence Artifact upload did not succeed." >&2
+            exit 1
+          fi
+
+  unit-test:
+    name: unit-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - governance-check
+    outputs:
+      unit_test_result: ${{ steps.unit-test.outputs.unit_test_result }}
+      evidence_artifact_name: ${{ steps.unit-test.outputs.evidence_artifact_name }}
+      evidence_artifact_uploaded: ${{ steps.upload-unit-test-evidence.outcome == 'success' }}
+      evidence_artifact_id: ${{ steps.upload-unit-test-evidence.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Go
+        # actions/setup-go v5.5.0
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: "1.26.4"
+
+      - name: Install gotestsum
+        run: |
+          set -Eeuo pipefail
+          echo "$(go env GOPATH)/bin" >> "${GITHUB_PATH}"
+          go install gotest.tools/gotestsum@v1.13.0
+
+      - name: Run Go unit tests
+        id: unit-test
+        continue-on-error: true
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/pr-ci/unit_test.py \
+            --output-dir "${RUNNER_TEMP}/pr-ci-unit-test" \
+            --repository "${{ github.repository }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
+            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
+            --target-version "${{ needs.governance-check.outputs.target_version }}" \
+            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --github-step-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload unit-test evidence
+        id: upload-unit-test-evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.unit-test.outputs.evidence_artifact_name || format('evidence-unit-test_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
+          path: ${{ runner.temp }}/pr-ci-unit-test/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce unit-test result
+        if: always()
+        env:
+          UNIT_TEST_RESULT: ${{ steps.unit-test.outputs.unit_test_result }}
+          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-unit-test-evidence.outcome == 'success' }}
+        run: |
+          set -Eeuo pipefail
+          if [ "${UNIT_TEST_RESULT:-}" != "success" ]; then
+            echo "ERROR: unit-test result is ${UNIT_TEST_RESULT:-<missing>}" >&2
+            exit 1
+          fi
+          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
+            echo "ERROR: unit-test evidence Artifact upload did not succeed." >&2
+            exit 1
+          fi
+
+  build-package:
+    name: build-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - governance-check
+      - static-analysis
+      - unit-test
+    outputs:
+      build_package_result: ${{ steps.build-package.outputs.build_package_result }}
+      build_artifact_name: ${{ steps.build-package.outputs.build_artifact_name }}
+      build_artifact_version: ${{ steps.build-package.outputs.build_artifact_version }}
+      build_artifact_checksum: ${{ steps.build-package.outputs.build_artifact_checksum }}
+      build_artifact_uploaded: ${{ steps.upload-build-artifact.outcome == 'success' }}
+      build_artifact_id: ${{ steps.upload-build-artifact.outputs.artifact-id }}
+      evidence_artifact_name: ${{ steps.build-package.outputs.evidence_artifact_name }}
+      evidence_artifact_uploaded: ${{ steps.upload-build-package-evidence.outcome == 'success' }}
+      evidence_artifact_id: ${{ steps.upload-build-package-evidence.outputs.artifact-id }}
+    steps:
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Go
+        # actions/setup-go v5.5.0
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: "1.26.4"
+
+      - name: Build and package Go app
+        id: build-package
+        continue-on-error: true
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/pr-ci/build_package.py \
+            --build-output-dir "${RUNNER_TEMP}/pr-ci-build-artifact" \
+            --evidence-output-dir "${RUNNER_TEMP}/pr-ci-build-package-evidence" \
+            --repository "${{ github.repository }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-number "${{ github.run_number }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --test-run-id "${{ needs.governance-check.outputs.test_run_id }}" \
+            --issue-number "${{ needs.governance-check.outputs.issue_number }}" \
+            --target-version "${{ needs.governance-check.outputs.target_version }}" \
+            --required-final-stage "${{ needs.governance-check.outputs.required_final_stage }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --pr-head-ref "${{ github.event.pull_request.head.ref }}" \
+            --pr-head-sha "${{ github.event.pull_request.head.sha }}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --github-step-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload Go app Build Artifact
+        id: upload-build-artifact
+        if: always() && steps.build-package.outputs.build_package_result == 'success'
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.build-package.outputs.build_artifact_name }}
+          path: ${{ runner.temp }}/pr-ci-build-artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build-package evidence
+        id: upload-build-package-evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.build-package.outputs.evidence_artifact_name || format('evidence-build-package_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
+          path: ${{ runner.temp }}/pr-ci-build-package-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce build-package result
+        if: always()
+        env:
+          BUILD_PACKAGE_RESULT: ${{ steps.build-package.outputs.build_package_result }}
+          BUILD_ARTIFACT_UPLOADED: ${{ steps.upload-build-artifact.outcome == 'success' }}
+          BUILD_ARTIFACT_CHECKSUM: ${{ steps.build-package.outputs.build_artifact_checksum }}
+          EVIDENCE_ARTIFACT_UPLOADED: ${{ steps.upload-build-package-evidence.outcome == 'success' }}
+        run: |
+          set -Eeuo pipefail
+          if [ "${BUILD_PACKAGE_RESULT:-}" != "success" ]; then
+            echo "ERROR: build-package result is ${BUILD_PACKAGE_RESULT:-<missing>}" >&2
+            exit 1
+          fi
+          if [ "${BUILD_ARTIFACT_UPLOADED}" != "true" ]; then
+            echo "ERROR: Build Artifact upload did not succeed." >&2
+            exit 1
+          fi
+          if [ -z "${BUILD_ARTIFACT_CHECKSUM:-}" ]; then
+            echo "ERROR: Build Artifact checksum is missing." >&2
+            exit 1
+          fi
+          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
+            echo "ERROR: build-package evidence Artifact upload did not succeed." >&2
+            exit 1
+          fi
+
   pr-ci-gate:
     name: pr-ci-gate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs:
       - governance-check
+      - static-analysis
+      - unit-test
+      - build-package
     if: always()
     steps:
       - name: Evaluate PR CI gate
         env:
           GOVERNANCE_JOB_RESULT: ${{ needs.governance-check.result }}
+          STATIC_ANALYSIS_JOB_RESULT: ${{ needs.static-analysis.result }}
+          UNIT_TEST_JOB_RESULT: ${{ needs.unit-test.result }}
+          BUILD_PACKAGE_JOB_RESULT: ${{ needs.build-package.result }}
           TEST_RUN_ID: ${{ needs.governance-check.outputs.test_run_id }}
           GOVERNANCE_RESULT: ${{ needs.governance-check.outputs.governance_result }}
+          STATIC_ANALYSIS_RESULT: ${{ needs.static-analysis.outputs.static_analysis_result }}
+          UNIT_TEST_RESULT: ${{ needs.unit-test.outputs.unit_test_result }}
+          BUILD_PACKAGE_RESULT: ${{ needs.build-package.outputs.build_package_result }}
           ISSUE_NUMBER: ${{ needs.governance-check.outputs.issue_number }}
           TARGET_VERSION: ${{ needs.governance-check.outputs.target_version }}
           REQUIRED_FINAL_STAGE: ${{ needs.governance-check.outputs.required_final_stage }}
-          EVIDENCE_ARTIFACT_NAME: ${{ needs.governance-check.outputs.evidence_artifact_name }}
-          EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.governance-check.outputs.evidence_artifact_uploaded }}
-          EVIDENCE_ARTIFACT_ID: ${{ needs.governance-check.outputs.evidence_artifact_id }}
+          GOVERNANCE_EVIDENCE_ARTIFACT_NAME: ${{ needs.governance-check.outputs.evidence_artifact_name }}
+          GOVERNANCE_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.governance-check.outputs.evidence_artifact_uploaded }}
+          GOVERNANCE_EVIDENCE_ARTIFACT_ID: ${{ needs.governance-check.outputs.evidence_artifact_id }}
+          STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME: ${{ needs.static-analysis.outputs.evidence_artifact_name }}
+          STATIC_ANALYSIS_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.static-analysis.outputs.evidence_artifact_uploaded }}
+          STATIC_ANALYSIS_EVIDENCE_ARTIFACT_ID: ${{ needs.static-analysis.outputs.evidence_artifact_id }}
+          UNIT_TEST_EVIDENCE_ARTIFACT_NAME: ${{ needs.unit-test.outputs.evidence_artifact_name }}
+          UNIT_TEST_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.unit-test.outputs.evidence_artifact_uploaded }}
+          UNIT_TEST_EVIDENCE_ARTIFACT_ID: ${{ needs.unit-test.outputs.evidence_artifact_id }}
+          BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME: ${{ needs.build-package.outputs.evidence_artifact_name }}
+          BUILD_PACKAGE_EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.build-package.outputs.evidence_artifact_uploaded }}
+          BUILD_PACKAGE_EVIDENCE_ARTIFACT_ID: ${{ needs.build-package.outputs.evidence_artifact_id }}
+          BUILD_ARTIFACT_NAME: ${{ needs.build-package.outputs.build_artifact_name }}
+          BUILD_ARTIFACT_UPLOADED: ${{ needs.build-package.outputs.build_artifact_uploaded }}
+          BUILD_ARTIFACT_ID: ${{ needs.build-package.outputs.build_artifact_id }}
+          BUILD_ARTIFACT_VERSION: ${{ needs.build-package.outputs.build_artifact_version }}
+          BUILD_ARTIFACT_CHECKSUM: ${{ needs.build-package.outputs.build_artifact_checksum }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -94,35 +358,91 @@ jobs:
           gate_result="success"
           reasons=()
 
-          if [ "${GOVERNANCE_JOB_RESULT}" != "success" ]; then
-            gate_result="failure"
-            reasons+=("governance-check job result is ${GOVERNANCE_JOB_RESULT}")
-          fi
+          require_value() {
+            local label="$1"
+            local value="${2:-}"
+            if [ -z "${value}" ]; then
+              gate_result="failure"
+              reasons+=("required value ${label} is missing")
+            fi
+          }
+
+          require_success_job() {
+            local job_name="$1"
+            local result="${2:-}"
+            if [ "${result}" != "success" ]; then
+              gate_result="failure"
+              reasons+=("${job_name} job result is ${result:-<missing>}")
+            fi
+          }
+
+          require_logical_success() {
+            local label="$1"
+            local result="${2:-}"
+            if [ "${result}" != "success" ]; then
+              gate_result="failure"
+              reasons+=("${label} is ${result:-<missing>}")
+            fi
+          }
+
+          require_uploaded_artifact() {
+            local label="$1"
+            local uploaded="${2:-}"
+            local name="${3:-}"
+            local artifact_id="${4:-}"
+            require_value "${label} Artifact name" "${name}"
+            require_value "${label} Artifact ID" "${artifact_id}"
+            if [ "${uploaded}" != "true" ]; then
+              gate_result="failure"
+              reasons+=("${label} Artifact upload did not succeed")
+            fi
+          }
+
+          require_success_job "governance-check" "${GOVERNANCE_JOB_RESULT}"
+          require_success_job "static-analysis" "${STATIC_ANALYSIS_JOB_RESULT}"
+          require_success_job "unit-test" "${UNIT_TEST_JOB_RESULT}"
+          require_success_job "build-package" "${BUILD_PACKAGE_JOB_RESULT}"
 
           for required_name in \
             TEST_RUN_ID \
-            GOVERNANCE_RESULT \
             ISSUE_NUMBER \
             TARGET_VERSION \
-            REQUIRED_FINAL_STAGE \
-            EVIDENCE_ARTIFACT_NAME \
-            EVIDENCE_ARTIFACT_UPLOADED; do
-            required_value="${!required_name:-}"
-            if [ -z "${required_value}" ]; then
-              gate_result="failure"
-              reasons+=("required output ${required_name} is missing")
-            fi
+            REQUIRED_FINAL_STAGE; do
+            require_value "${required_name}" "${!required_name:-}"
           done
 
-          if [ "${GOVERNANCE_RESULT}" != "success" ]; then
-            gate_result="failure"
-            reasons+=("governance_result is ${GOVERNANCE_RESULT:-<missing>}")
-          fi
+          require_logical_success "governance_result" "${GOVERNANCE_RESULT:-}"
+          require_logical_success "static_analysis_result" "${STATIC_ANALYSIS_RESULT:-}"
+          require_logical_success "unit_test_result" "${UNIT_TEST_RESULT:-}"
+          require_logical_success "build_package_result" "${BUILD_PACKAGE_RESULT:-}"
 
-          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
-            gate_result="failure"
-            reasons+=("governance evidence artifact upload did not succeed")
-          fi
+          require_uploaded_artifact \
+            "governance evidence" \
+            "${GOVERNANCE_EVIDENCE_ARTIFACT_UPLOADED:-}" \
+            "${GOVERNANCE_EVIDENCE_ARTIFACT_NAME:-}" \
+            "${GOVERNANCE_EVIDENCE_ARTIFACT_ID:-}"
+          require_uploaded_artifact \
+            "static-analysis evidence" \
+            "${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_UPLOADED:-}" \
+            "${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME:-}" \
+            "${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_ID:-}"
+          require_uploaded_artifact \
+            "unit-test evidence" \
+            "${UNIT_TEST_EVIDENCE_ARTIFACT_UPLOADED:-}" \
+            "${UNIT_TEST_EVIDENCE_ARTIFACT_NAME:-}" \
+            "${UNIT_TEST_EVIDENCE_ARTIFACT_ID:-}"
+          require_uploaded_artifact \
+            "build-package evidence" \
+            "${BUILD_PACKAGE_EVIDENCE_ARTIFACT_UPLOADED:-}" \
+            "${BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME:-}" \
+            "${BUILD_PACKAGE_EVIDENCE_ARTIFACT_ID:-}"
+          require_uploaded_artifact \
+            "Build" \
+            "${BUILD_ARTIFACT_UPLOADED:-}" \
+            "${BUILD_ARTIFACT_NAME:-}" \
+            "${BUILD_ARTIFACT_ID:-}"
+          require_value "Build Artifact version" "${BUILD_ARTIFACT_VERSION:-}"
+          require_value "Build Artifact checksum" "${BUILD_ARTIFACT_CHECKSUM:-}"
 
           {
             echo "# pr-ci-gate Summary"
@@ -130,7 +450,6 @@ jobs:
             echo "| Item | Value |"
             echo "|---|---|"
             echo "| Gate result | \`${gate_result}\` |"
-            echo "| governance-check job result | \`${GOVERNANCE_JOB_RESULT}\` |"
             echo "| Pull Request | \`#${PR_NUMBER:-<missing>}\` |"
             echo "| Branch | \`${PR_HEAD_REF:-<missing>}\` |"
             echo "| Head SHA | \`${PR_HEAD_SHA:-<missing>}\` |"
@@ -138,12 +457,24 @@ jobs:
             echo "| Issue | \`${ISSUE_NUMBER:-<missing>}\` |"
             echo "| target_version | \`${TARGET_VERSION:-<missing>}\` |"
             echo "| required_final_stage | \`${REQUIRED_FINAL_STAGE:-<missing>}\` |"
-            echo "| governance_result | \`${GOVERNANCE_RESULT:-<missing>}\` |"
             echo "| Workflow run ID | \`${WORKFLOW_RUN_ID:-<missing>}\` |"
             echo "| Run attempt | \`A${WORKFLOW_RUN_ATTEMPT:-<missing>}\` |"
-            echo "| Governance evidence Artifact | \`${EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
-            echo "| Governance evidence Artifact upload result | \`${EVIDENCE_ARTIFACT_UPLOADED:-<missing>}\` |"
-            echo "| Governance evidence Artifact ID | \`${EVIDENCE_ARTIFACT_ID:-<missing>}\` |"
+            echo "| governance-check job result | \`${GOVERNANCE_JOB_RESULT:-<missing>}\` |"
+            echo "| governance logical result | \`${GOVERNANCE_RESULT:-<missing>}\` |"
+            echo "| static-analysis job result | \`${STATIC_ANALYSIS_JOB_RESULT:-<missing>}\` |"
+            echo "| static-analysis logical result | \`${STATIC_ANALYSIS_RESULT:-<missing>}\` |"
+            echo "| unit-test job result | \`${UNIT_TEST_JOB_RESULT:-<missing>}\` |"
+            echo "| unit-test logical result | \`${UNIT_TEST_RESULT:-<missing>}\` |"
+            echo "| build-package job result | \`${BUILD_PACKAGE_JOB_RESULT:-<missing>}\` |"
+            echo "| build-package logical result | \`${BUILD_PACKAGE_RESULT:-<missing>}\` |"
+            echo "| Governance evidence Artifact | \`${GOVERNANCE_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
+            echo "| Static-analysis evidence Artifact | \`${STATIC_ANALYSIS_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
+            echo "| Unit-test evidence Artifact | \`${UNIT_TEST_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
+            echo "| Build-package evidence Artifact | \`${BUILD_PACKAGE_EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
+            echo "| Build Artifact | \`${BUILD_ARTIFACT_NAME:-<missing>}\` |"
+            echo "| Build Artifact ID | \`${BUILD_ARTIFACT_ID:-<missing>}\` |"
+            echo "| Build Artifact version | \`${BUILD_ARTIFACT_VERSION:-<missing>}\` |"
+            echo "| Build Artifact checksum | \`${BUILD_ARTIFACT_CHECKSUM:-<missing>}\` |"
             echo
             echo "## Gate failure reasons"
             echo
