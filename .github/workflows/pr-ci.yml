@@ -1,20 +1,161 @@
 # Copyright 2026 Ranamicus Technology LLC. All rights reserved.
 
-name: Learning Starter Check
+name: PR CI
 
 on:
-  workflow_dispatch:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited
+      - ready_for_review
 
 permissions:
   contents: read
+  pull-requests: read
+  issues: read
+  actions: read
 
 jobs:
-  starter-readiness:
-    name: starter-readiness
+  governance-check:
+    name: governance-check
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    outputs:
+      test_run_id: ${{ steps.governance.outputs.test_run_id }}
+      governance_result: ${{ steps.governance.outputs.governance_result }}
+      issue_number: ${{ steps.governance.outputs.issue_number }}
+      target_version: ${{ steps.governance.outputs.target_version }}
+      required_final_stage: ${{ steps.governance.outputs.required_final_stage }}
+      evidence_artifact_name: ${{ steps.governance.outputs.evidence_artifact_name }}
+      evidence_artifact_uploaded: ${{ steps.upload-governance-evidence.outcome == 'success' }}
+      evidence_artifact_id: ${{ steps.upload-governance-evidence.outputs.artifact-id }}
     steps:
-      - name: Show the next learning step
+      - name: Checkout repository
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Run governance check
+        id: governance
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -Eeuo pipefail
-          echo "Starter workflow is available. Apply the Lesson 5.2 patch before creating a Draft Pull Request."
+          python3 scripts/pr-ci/governance_check.py \
+            --event-path "${GITHUB_EVENT_PATH}" \
+            --output-dir "${RUNNER_TEMP}/pr-ci-governance" \
+            --repository "${{ github.repository }}" \
+            --workflow-name "${{ github.workflow }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --workflow-run-attempt "${{ github.run_attempt }}" \
+            --job-name "governance-check" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --github-step-summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload governance evidence
+        id: upload-governance-evidence
+        if: always()
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ steps.governance.outputs.evidence_artifact_name || format('evidence-governance_missing-{0}-A{1}', github.run_id, github.run_attempt) }}
+          path: ${{ runner.temp }}/pr-ci-governance/
+          if-no-files-found: error
+          retention-days: 30
+
+  pr-ci-gate:
+    name: pr-ci-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs:
+      - governance-check
+    if: always()
+    steps:
+      - name: Evaluate PR CI gate
+        env:
+          GOVERNANCE_JOB_RESULT: ${{ needs.governance-check.result }}
+          TEST_RUN_ID: ${{ needs.governance-check.outputs.test_run_id }}
+          GOVERNANCE_RESULT: ${{ needs.governance-check.outputs.governance_result }}
+          ISSUE_NUMBER: ${{ needs.governance-check.outputs.issue_number }}
+          TARGET_VERSION: ${{ needs.governance-check.outputs.target_version }}
+          REQUIRED_FINAL_STAGE: ${{ needs.governance-check.outputs.required_final_stage }}
+          EVIDENCE_ARTIFACT_NAME: ${{ needs.governance-check.outputs.evidence_artifact_name }}
+          EVIDENCE_ARTIFACT_UPLOADED: ${{ needs.governance-check.outputs.evidence_artifact_uploaded }}
+          EVIDENCE_ARTIFACT_ID: ${{ needs.governance-check.outputs.evidence_artifact_id }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -Eeuo pipefail
+
+          gate_result="success"
+          reasons=()
+
+          if [ "${GOVERNANCE_JOB_RESULT}" != "success" ]; then
+            gate_result="failure"
+            reasons+=("governance-check job result is ${GOVERNANCE_JOB_RESULT}")
+          fi
+
+          for required_name in \
+            TEST_RUN_ID \
+            GOVERNANCE_RESULT \
+            ISSUE_NUMBER \
+            TARGET_VERSION \
+            REQUIRED_FINAL_STAGE \
+            EVIDENCE_ARTIFACT_NAME \
+            EVIDENCE_ARTIFACT_UPLOADED; do
+            required_value="${!required_name:-}"
+            if [ -z "${required_value}" ]; then
+              gate_result="failure"
+              reasons+=("required output ${required_name} is missing")
+            fi
+          done
+
+          if [ "${GOVERNANCE_RESULT}" != "success" ]; then
+            gate_result="failure"
+            reasons+=("governance_result is ${GOVERNANCE_RESULT:-<missing>}")
+          fi
+
+          if [ "${EVIDENCE_ARTIFACT_UPLOADED}" != "true" ]; then
+            gate_result="failure"
+            reasons+=("governance evidence artifact upload did not succeed")
+          fi
+
+          {
+            echo "# pr-ci-gate Summary"
+            echo
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Gate result | \`${gate_result}\` |"
+            echo "| governance-check job result | \`${GOVERNANCE_JOB_RESULT}\` |"
+            echo "| Pull Request | \`#${PR_NUMBER:-<missing>}\` |"
+            echo "| Branch | \`${PR_HEAD_REF:-<missing>}\` |"
+            echo "| Head SHA | \`${PR_HEAD_SHA:-<missing>}\` |"
+            echo "| Test run ID | \`${TEST_RUN_ID:-<missing>}\` |"
+            echo "| Issue | \`${ISSUE_NUMBER:-<missing>}\` |"
+            echo "| target_version | \`${TARGET_VERSION:-<missing>}\` |"
+            echo "| required_final_stage | \`${REQUIRED_FINAL_STAGE:-<missing>}\` |"
+            echo "| governance_result | \`${GOVERNANCE_RESULT:-<missing>}\` |"
+            echo "| Workflow run ID | \`${WORKFLOW_RUN_ID:-<missing>}\` |"
+            echo "| Run attempt | \`A${WORKFLOW_RUN_ATTEMPT:-<missing>}\` |"
+            echo "| Governance evidence Artifact | \`${EVIDENCE_ARTIFACT_NAME:-<missing>}\` |"
+            echo "| Governance evidence Artifact upload result | \`${EVIDENCE_ARTIFACT_UPLOADED:-<missing>}\` |"
+            echo "| Governance evidence Artifact ID | \`${EVIDENCE_ARTIFACT_ID:-<missing>}\` |"
+            echo
+            echo "## Gate failure reasons"
+            echo
+            if [ "${#reasons[@]}" -eq 0 ]; then
+              echo "- なし"
+            else
+              printf -- "- %s\n" "${reasons[@]}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${gate_result}" != "success" ]; then
+            printf 'ERROR: pr-ci-gate failed:\n' >&2
+            printf ' - %s\n' "${reasons[@]}" >&2
+            exit 1
+          fi
