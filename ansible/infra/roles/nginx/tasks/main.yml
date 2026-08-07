@@ -1,0 +1,57 @@
+---
+# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
+
+- name: Install Nginx package
+  ansible.builtin.apt:
+    name:
+      - nginx
+    state: present
+    update_cache: true
+
+- name: Remove default Nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  register: nginx_default_site
+
+- name: Configure Nginx reverse proxy for Go app
+  ansible.builtin.template:
+    src: ms1-app.conf.j2
+    dest: /etc/nginx/sites-available/ms1-app.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: nginx_site_config
+
+- name: Enable Nginx reverse proxy site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/ms1-app.conf
+    dest: /etc/nginx/sites-enabled/ms1-app.conf
+    state: link
+  register: nginx_site_link
+
+- name: Validate Nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Check whether Nginx is running
+  ansible.builtin.command: pgrep -x nginx
+  register: nginx_process
+  failed_when: false
+  changed_when: false
+
+- name: Reload Nginx without systemd when configuration changed
+  ansible.builtin.command: nginx -s reload
+  when:
+    - nginx_process.rc == 0
+    - nginx_default_site.changed or nginx_site_config.changed or nginx_site_link.changed
+  changed_when: true
+
+- name: Start Nginx without systemd when not running
+  ansible.builtin.command: nginx
+  when: nginx_process.rc != 0
+  changed_when: true
+
+- name: Confirm Nginx process is running
+  ansible.builtin.command: pgrep -x nginx
+  changed_when: false

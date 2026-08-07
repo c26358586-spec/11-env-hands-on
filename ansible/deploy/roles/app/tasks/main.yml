@@ -1,0 +1,131 @@
+---
+# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
+
+- name: Validate app artifact input
+  ansible.builtin.assert:
+    that:
+      - app_artifact_path is defined
+      - app_artifact_path | length > 0
+      - app_version is defined
+      - app_version | length > 0
+    fail_msg: "app_artifact_path and app_version are required for the course app deploy."
+
+- name: Create Go app runtime directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /opt/ms1-app/bin, mode: "0755" }
+    - { path: /run/ms1-app, mode: "0755" }
+    - { path: /var/log/ms1-app, mode: "0755" }
+
+- name: Copy build artifact to target container
+  ansible.builtin.copy:
+    src: "{{ app_artifact_path }}"
+    dest: /opt/ms1-app/bin/ms1-app
+    owner: root
+    group: root
+    mode: "0755"
+  register: app_binary
+
+- name: Install app launcher
+  ansible.builtin.template:
+    src: ms1-app-run.j2
+    dest: /usr/local/bin/ms1-app-run
+    owner: root
+    group: root
+    mode: "0755"
+  register: app_launcher
+
+- name: Check current Go app process
+  ansible.builtin.shell: |
+    set -eu
+    test -s /run/ms1-app/app.pid
+    kill -0 "$(cat /run/ms1-app/app.pid)"
+  args:
+    executable: /bin/bash
+  register: app_process
+  failed_when: false
+  changed_when: false
+
+- name: Stop Go app when deployed artifact changed
+  ansible.builtin.shell: |
+    set -eu
+    pid="$(cat /run/ms1-app/app.pid)"
+    kill "${pid}"
+    for _ in $(seq 1 20); do
+      if ! kill -0 "${pid}" 2>/dev/null; then
+        exit 0
+      fi
+      sleep 0.2
+    done
+    kill -9 "${pid}"
+  args:
+    executable: /bin/bash
+  when:
+    - app_process.rc == 0
+    - app_binary.changed or app_launcher.changed
+  changed_when: true
+
+- name: Check Go app process after optional stop
+  ansible.builtin.shell: |
+    set -eu
+    test -s /run/ms1-app/app.pid
+    kill -0 "$(cat /run/ms1-app/app.pid)"
+  args:
+    executable: /bin/bash
+  register: app_process_after_stop
+  failed_when: false
+  changed_when: false
+
+- name: Start Go app without systemd
+  ansible.builtin.shell: |
+    set -eu
+    nohup env APP_ADDR="127.0.0.1:{{ app_port | default(8080) }}" \
+      APP_VERSION="{{ app_version }}" \
+      /usr/local/bin/ms1-app-run >> /var/log/ms1-app/app.log 2>&1 &
+    echo "$!" > /run/ms1-app/app.pid
+  args:
+    executable: /bin/bash
+  when: app_process_after_stop.rc != 0
+  changed_when: true
+
+- name: Confirm Go app process is running
+  ansible.builtin.shell: |
+    set -eu
+    test -s /run/ms1-app/app.pid
+    kill -0 "$(cat /run/ms1-app/app.pid)"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Confirm Go app direct health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ app_port | default(8080) }}/health"
+    method: GET
+    return_content: true
+    status_code: 200
+  register: app_direct_health
+  retries: 10
+  delay: 1
+  until:
+    - app_direct_health.status == 200
+    - app_direct_health.json.status == "ok"
+    - app_direct_health.json.service == "ms1-go-api"
+
+- name: Confirm Nginx proxied health endpoint
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ nginx_port | default(80) }}/health"
+    method: GET
+    return_content: true
+    status_code: 200
+  register: app_proxied_health
+  retries: 10
+  delay: 1
+  until:
+    - app_proxied_health.status == 200
+    - app_proxied_health.json.status == "ok"
+    - app_proxied_health.json.service == "ms1-go-api"

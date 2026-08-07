@@ -1,0 +1,8 @@
+---
+# Copyright 2026 Ranamicus Technology LLC. All rights reserved.
+
+- name: Configure the course target infrastructure
+  hosts: ms1_target
+  gather_facts: false
+  roles:
+    - role: nginx
